@@ -1,5 +1,52 @@
 127.0.0.1:8092 {
   root * /srv
+  encode gzip
+
+  handle /api/health {
+    respond "{"ok":true,"service":"tradebotzi-edge","paperOnly":true}" 200
+  }
+
+  handle /api/ai/omniroute/models {
+    rewrite * /v1/models
+    reverse_proxy 127.0.0.1:20128 {
+      header_up Authorization "Bearer {$AI_GATEWAY_API_KEY}"
+    }
+  }
+
+  handle /api/ai/omniroute/chat {
+    rewrite * /v1/chat/completions
+    reverse_proxy 127.0.0.1:20128 {
+      header_up Authorization "Bearer {$AI_GATEWAY_API_KEY}"
+      header_up Content-Type application/json
+    }
+  }
+
+  handle /api/ai/hermes/health {
+    rewrite * /health
+    reverse_proxy 127.0.0.1:8642
+  }
+
+  handle /api/ai/hermes/models {
+    rewrite * /v1/models
+    reverse_proxy 127.0.0.1:8642 {
+      header_up Authorization "Bearer {$API_SERVER_KEY}"
+    }
+  }
+
+  handle /api/ai/hermes/chat {
+    respond "{"error":"Hermes chat is internal-only"}" 403
+  }
+
+  handle /api/ai/ollama/tags {
+    rewrite * /api/tags
+    reverse_proxy {$OLLAMA_UPSTREAM}
+  }
+
+  handle /api/ai/ollama/chat {
+    rewrite * /api/chat
+    reverse_proxy {$OLLAMA_UPSTREAM}
+  }
+
   try_files {path} /index.html
   file_server
 }
