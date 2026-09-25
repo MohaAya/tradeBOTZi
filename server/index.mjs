@@ -44,6 +44,145 @@ async function fetchJson(url, opts = {}, timeout = 30000) {
   }
 }
 
+
+const BINANCE_BASE = "https://api.binance.com/api/v3";
+const COINBASE_BASE = "https://api.coinbase.com/v2";
+const HYPERLIQUID_INFO = "https://api.hyperliquid.xyz/info";
+
+async function serverMarketSnapshot() {
+  const fetchedAt = Date.now();
+  const observations = [];
+  const providerStatuses = [];
+
+  const binanceStarted = Date.now();
+  try {
+    const result = await fetchJson(`${BINANCE_BASE}/ticker/24hr`, {}, 15000);
+    if (!result.ok || !Array.isArray(result.data)) throw new Error(`Binance HTTP ${result.status}`);
+    const rows = result.data
+      .filter(x => String(x.symbol || "").endsWith("USDT"))
+      .sort((a, b) => Number(b.quoteVolume || 0) - Number(a.quoteVolume || 0))
+      .slice(0, 100);
+    for (const t of rows) {
+      observations.push({
+        provider: "binance",
+        canonicalSymbol: String(t.symbol).replace(/USDT$/, ""),
+        providerSymbol: t.symbol,
+        assetClass: "crypto",
+        marketType: "SPOT",
+        timestamp: fetchedAt,
+        receivedAt: fetchedAt,
+        price: Number(t.lastPrice),
+        bid: Number(t.bidPrice) || null,
+        ask: Number(t.askPrice) || null,
+        spread: Number(t.askPrice) > 0 && Number(t.bidPrice) > 0 ? Number(t.askPrice) - Number(t.bidPrice) : null,
+        change24h: Number(t.priceChangePercent),
+        volume24h: Number(t.quoteVolume),
+        high24h: Number(t.highPrice),
+        low24h: Number(t.lowPrice),
+        freshness: "LIVE",
+        dataQuality: "good"
+      });
+    }
+    providerStatuses.push({ provider: "binance", status: "connected", latencyMs: Date.now() - binanceStarted });
+  } catch (error) {
+    providerStatuses.push({ provider: "binance", status: "error", latencyMs: Date.now() - binanceStarted, error: String(error) });
+  }
+
+  const coinbaseStarted = Date.now();
+  try {
+    const symbols = ["BTC","ETH","SOL","AVAX","LINK","MATIC","DOT","ATOM"];
+    const rows = await Promise.all(symbols.map(async symbol => {
+      const result = await fetchJson(`${COINBASE_BASE}/prices/${symbol}-USD/spot`, {}, 10000);
+      if (!result.ok || !result.data?.data?.amount) return null;
+      return {
+        provider: "coinbase",
+        canonicalSymbol: symbol,
+        providerSymbol: `${symbol}-USD`,
+        assetClass: "crypto",
+        marketType: "SPOT",
+        timestamp: fetchedAt,
+        receivedAt: fetchedAt,
+        price: Number(result.data.data.amount),
+        bid: null, ask: null, spread: null, change24h: null, volume24h: null,
+        high24h: null, low24h: null, freshness: "LIVE", dataQuality: "good"
+      };
+    }));
+    observations.push(...rows.filter(Boolean));
+    providerStatuses.push({ provider: "coinbase", status: "connected", latencyMs: Date.now() - coinbaseStarted });
+  } catch (error) {
+    providerStatuses.push({ provider: "coinbase", status: "error", latencyMs: Date.now() - coinbaseStarted, error: String(error) });
+  }
+
+  const hlStarted = Date.now();
+  try {
+    const result = await fetchJson(HYPERLIQUID_INFO, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "allMids" })
+    }, 10000);
+    if (!result.ok || !result.data || typeof result.data !== "object") throw new Error(`Hyperliquid HTTP ${result.status}`);
+    for (const [symbol, mid] of Object.entries(result.data)) {
+      if (String(symbol).startsWith("#")) continue;
+      const price = Number(mid);
+      if (!Number.isFinite(price)) continue;
+      observations.push({
+        provider: "hyperliquid",
+        canonicalSymbol: String(symbol).toUpperCase(),
+        providerSymbol: String(symbol),
+        assetClass: "crypto",
+        marketType: "PERPETUAL",
+        timestamp: fetchedAt,
+        receivedAt: fetchedAt,
+        price,
+        bid: null, ask: null, spread: null, change24h: null, volume24h: null,
+        high24h: null, low24h: null, freshness: "LIVE", dataQuality: "good"
+      });
+    }
+    providerStatuses.push({ provider: "hyperliquid", status: "connected", latencyMs: Date.now() - hlStarted });
+  } catch (error) {
+    providerStatuses.push({ provider: "hyperliquid", status: "error", latencyMs: Date.now() - hlStarted, error: String(error) });
+  }
+
+  return { observations, providerStatuses, fetchedAt };
+}
+
+async function serverHistoricalData(symbols, interval = "1d", limit = 90) {
+  const clean = [...new Set(symbols)]
+    .map(s => String(s).toUpperCase().trim())
+    .filter(s => /^[A-Z0-9]{1,20}$/.test(s))
+    .slice(0, 30);
+  const safeLimit = Math.max(10, Math.min(Number(limit) || 90, 365));
+  const allowedIntervals = new Set(["1m","5m","15m","1h","4h","1d"]);
+  const safeInterval = allowedIntervals.has(interval) ? interval : "1d";
+  const result = {};
+
+  await Promise.all(clean.map(async symbol => {
+    try {
+      const response = await fetchJson(
+        `${BINANCE_BASE}/klines?symbol=${encodeURIComponent(symbol)}USDT&interval=${safeInterval}&limit=${safeLimit}`,
+        {},
+        15000
+      );
+      if (!response.ok || !Array.isArray(response.data)) return;
+      result[symbol] = response.data.map(k => ({
+        provider: "binance",
+        canonicalSymbol: symbol,
+        timestamp: k[0],
+        interval: safeInterval,
+        open: Number(k[1]),
+        high: Number(k[2]),
+        low: Number(k[3]),
+        close: Number(k[4]),
+        volume: Number(k[5]),
+        sourceTimestamp: k[0],
+        ingestionTimestamp: Date.now()
+      }));
+    } catch {}
+  }));
+
+  return result;
+}
+
 async function omniModels() {
   return fetchJson(`${OMNI_URL}/models`, {
     headers: { Authorization: `Bearer ${OMNI_KEY}` }
@@ -142,6 +281,21 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/api/health") {
       return sendJson(res, 200, { ok: true, service: "tradebotzi-api", paperOnly: true });
+    }
+
+
+    if (req.method === "GET" && url.pathname === "/api/markets") {
+      const snapshot = await serverMarketSnapshot();
+      return sendJson(res, 200, snapshot);
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/history") {
+      const symbols = (url.searchParams.get("symbols") || "").split(",").filter(Boolean);
+      if (symbols.length === 0) return sendJson(res, 400, { error: "symbols_required" });
+      const interval = url.searchParams.get("interval") || "1d";
+      const limit = Number(url.searchParams.get("limit") || 90);
+      const history = await serverHistoricalData(symbols, interval, limit);
+      return sendJson(res, 200, { history });
     }
 
     if (req.method === "GET" && url.pathname === "/api/ai/providers") {
