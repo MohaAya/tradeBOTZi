@@ -254,54 +254,31 @@ export interface FetchResult {
 }
 
 export async function fetchAllMarkets(): Promise<FetchResult> {
-  const statuses: FetchResult['providerStatuses'] = [];
-  const allObs: MarketObservation[] = [];
-  const fetchedAt = Date.now();
-
-  try {
-    const start = Date.now();
-    const binanceObs = await fetchBinanceTickers();
-    allObs.push(...binanceObs);
-    statuses.push({ provider: 'binance', status: 'connected', latencyMs: Date.now() - start });
-  } catch (e: any) {
-    statuses.push({ provider: 'binance', status: 'error', latencyMs: 0, error: e.message });
-  }
-
-  try {
-    const start = Date.now();
-    const hlResult = await fetchHyperliquidMeta();
-    allObs.push(...hlResult.observations);
-    statuses.push({ provider: 'hyperliquid', status: 'connected', latencyMs: Date.now() - start });
-  } catch (e: any) {
-    statuses.push({ provider: 'hyperliquid', status: 'error', latencyMs: 0, error: e.message });
-  }
-
-  try {
-    const start = Date.now();
-    const coinbaseObs = await fetchCoinbasePrices();
-    allObs.push(...coinbaseObs);
-    statuses.push({ provider: 'coinbase', status: 'connected', latencyMs: Date.now() - start });
-  } catch (e: any) {
-    statuses.push({ provider: 'coinbase', status: 'error', latencyMs: 0, error: e.message });
-  }
-
-  return { observations: allObs, providerStatuses: statuses, fetchedAt };
+  const res = await fetch('/api/markets', { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Market backend failed: ${res.status}`);
+  const data = await res.json();
+  return {
+    observations: Array.isArray(data.observations) ? data.observations : [],
+    providerStatuses: Array.isArray(data.providerStatuses) ? data.providerStatuses : [],
+    fetchedAt: Number(data.fetchedAt) || Date.now(),
+  };
 }
 
 export async function fetchHistoricalData(symbols: string[], interval: string = '1d', limit: number = 90): Promise<Map<string, OHLCVBar[]>> {
+  const uniqueSymbols = Array.from(new Set(symbols.map(s => s.toUpperCase()))).slice(0, 30);
+  if (uniqueSymbols.length === 0) return new Map();
+
+  const params = new URLSearchParams({
+    symbols: uniqueSymbols.join(','),
+    interval,
+    limit: String(limit),
+  });
+  const res = await fetch(`/api/history?${params.toString()}`, { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Historical data backend failed: ${res.status}`);
+  const data = await res.json();
   const result = new Map<string, OHLCVBar[]>();
-  await Promise.allSettled(symbols.map(async (sym) => {
-    try {
-      const klines = await fetchBinanceKlines(sym, interval, limit);
-      if (klines.length > 0) {
-        result.set(sym, klines);
-        return;
-      }
-    } catch {}
-    try {
-      const hlKlines = await fetchHyperliquidCandles(sym, interval, limit);
-      if (hlKlines.length > 0) result.set(sym, hlKlines);
-    } catch {}
-  }));
+  for (const [symbol, bars] of Object.entries(data.history || {})) {
+    if (Array.isArray(bars) && bars.length > 0) result.set(symbol, bars as OHLCVBar[]);
+  }
   return result;
 }
