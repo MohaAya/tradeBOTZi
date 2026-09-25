@@ -170,7 +170,7 @@ function AgentsPanel({ store }: { store: AppStore }) {
 // PORTFOLIO BUILDER
 // ============================================================
 function PortfolioBuilder({ store }: { store: AppStore }) {
-  const { markets, portfolios, providerStatuses, generateNewPortfolios, portfoliosLoading, marketsLoading } = store;
+  const { markets, portfolios, providerStatuses, generateNewPortfolios, portfoliosLoading, marketsLoading, marketsError } = store;
   const connectedProviders = providerStatuses.filter(p => p.status === 'connected');
 
   return (
@@ -186,6 +186,16 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
           Generate Five Portfolios
         </button>
       </div>
+
+      {marketsError && (
+        <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+          <div>
+            <p className="text-red-400 text-sm font-medium">Portfolio generation error</p>
+            <p className="text-red-300/80 text-xs mt-1">{marketsError}</p>
+          </div>
+        </div>
+      )}
 
       {/* Provider Status */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
