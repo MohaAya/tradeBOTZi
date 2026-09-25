@@ -81,10 +81,12 @@ export function useAppStore(): AppStore {
       }));
       setProviderStatuses(providers);
 
-      const topSymbols = result.observations
-        .filter(o => o.volume24h !== null && o.volume24h! > 100000000)
-        .slice(0, 10)
-        .map(o => o.canonicalSymbol);
+      const topSymbols = Array.from(new Set(
+        [...result.observations]
+          .filter(o => o.provider === 'binance' && o.volume24h !== null && o.volume24h! > 0)
+          .sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0))
+          .map(o => o.canonicalSymbol)
+      )).slice(0, 20);
 
       if (topSymbols.length > 0) {
         const hist = await fetchHistoricalData(topSymbols, '1d', 90);
@@ -106,12 +108,41 @@ export function useAppStore(): AppStore {
   }, [refreshMarkets]);
 
   const generateNewPortfolios = useCallback(async () => {
-    if (markets.length === 0 || historicalData.size === 0) return;
     setPortfoliosLoading(true);
     try {
-      const newPortfolios = generatePortfolios(markets, historicalData);
+      if (markets.length === 0) {
+        throw new Error('Market data is not loaded yet. Refresh market data and try again.');
+      }
+
+      const candidateSymbols = Array.from(new Set(
+        [...markets]
+          .filter(o => o.provider === 'binance' && o.volume24h !== null && o.volume24h! > 0)
+          .sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0))
+          .map(o => o.canonicalSymbol)
+      )).slice(0, 20);
+
+      const mergedHistory = new Map(historicalData);
+      const missingSymbols = candidateSymbols.filter(symbol => {
+        const bars = mergedHistory.get(symbol);
+        return !bars || bars.length < 30;
+      });
+
+      if (missingSymbols.length > 0) {
+        const fetched = await fetchHistoricalData(missingSymbols, '1d', 90);
+        fetched.forEach((bars, symbol) => mergedHistory.set(symbol, bars));
+        setHistoricalData(new Map(mergedHistory));
+      }
+
+      const newPortfolios = generatePortfolios(markets, mergedHistory);
+      if (newPortfolios.length === 0) {
+        throw new Error('Portfolio generation could not find at least three liquid assets with sufficient historical data.');
+      }
+
+      setMarketsError(null);
       setPortfolios(newPortfolios);
       savePortfolios(newPortfolios);
+    } catch (e: any) {
+      setMarketsError(e.message || 'Portfolio generation failed');
     } finally {
       setPortfoliosLoading(false);
     }
