@@ -20,7 +20,8 @@ export async function fetchBinanceTickers(): Promise<MarketObservation[]> {
   
   return data
     .filter((t: any) => t.symbol.endsWith('USDT'))
-    .slice(0, 50)
+    .sort((a: any, b: any) => parseFloat(b.quoteVolume || '0') - parseFloat(a.quoteVolume || '0'))
+    .slice(0, 100)
     .map((t: any) => ({
       provider: 'binance',
       canonicalSymbol: t.symbol.replace('USDT', ''),
