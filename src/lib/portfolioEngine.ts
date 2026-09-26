@@ -242,14 +242,7 @@ export function generatePortfolios(observations: MarketObservation[], historical
   const hasOnlyCrypto = topAssets.every(a => a.assetClass === 'crypto');
   const universeLabel = hasOnlyCrypto ? 'CRYPTO-ONLY UNIVERSE' : 'MULTI-ASSET UNIVERSE';
 
-  const momentumAssets = [...symbolsWithData]
-    .map(symbol => {
-      const bars = historicalData.get(symbol) || [];
-      return { symbol, score: calculateMomentumScore(calculateReturns(bars.map(b => b.close))) };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Math.min(5, symbolsWithData.length))
-    .map(item => item.symbol);
+  const momentumAssets = symbolsWithData.slice(0, Math.min(5, symbolsWithData.length));
   portfolios.push(createPortfolio('A', 'Momentum Leaders', 'Top momentum crypto assets with inverse-volatility weighting', 'crypto_derivatives', momentumAssets, historicalData, observations, universeLabel, now));
 
   const largeCaps = symbolsWithData.slice(0, Math.min(6, symbolsWithData.length));
@@ -525,32 +518,3 @@ export function rankPortfolios(portfolios: Portfolio[], config: RankingConfig = 
     id: `rank-${now}`,
     timestamp: now,
     portfolioIds: portfolios.map(p => p.id),
-    results,
-    config,
-    dataSnapshotId: `snap-${now}`,
-  };
-}
-
-function determineLabel(score: number): RankingLabel {
-  if (score >= 70) return 'RECOMMENDED FOR PAPER';
-  if (score >= 50) return 'PAPER CANDIDATE';
-  if (score >= 30) return 'WATCH';
-  if (score >= 15) return 'HIGH RISK';
-  return 'DATA INSUFFICIENT';
-}
-
-function emptyBreakdown(): ScoreBreakdown {
-  return {
-    riskAdjustedPerformance: { score: 0, max: 25 },
-    drawdownResilience: { score: 0, max: 15 },
-    volatilityControl: { score: 0, max: 10 },
-    liquidity: { score: 0, max: 10 },
-    diversification: { score: 0, max: 10 },
-    momentumRegime: { score: 0, max: 10 },
-    historicalRobustness: { score: 0, max: 10 },
-    fundingCarry: { score: 0, max: 5 },
-    dataQuality: { score: 0, max: 5 },
-    total: 0,
-    maxTotal: 100,
-  };
-}
