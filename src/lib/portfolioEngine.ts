@@ -140,7 +140,7 @@ export function calculatePortfolioMetrics(
   weights: Map<string, number>,
   observations: MarketObservation[]
 ): PortfolioMetrics {
-  const symbols = Array.from(historicalData.keys());
+  const symbols = Array.from(weights.keys()).filter(symbol => historicalData.has(symbol));
   const returnsMatrix: number[][] = [];
   const portfolioReturns: number[] = [];
 
@@ -179,8 +179,8 @@ export function calculatePortfolioMetrics(
   const vol = calculateVolatility(portfolioReturns);
   let volRegime: PortfolioMetrics['volatilityRegime'] = 'normal';
   if (vol < 0.1) volRegime = 'low';
-  else if (vol > 0.4) volRegime = 'high';
   else if (vol > 0.6) volRegime = 'extreme';
+  else if (vol > 0.4) volRegime = 'high';
 
   const cumRet = calculateCumulativeReturn(portfolioPrices);
   let trendRegime: PortfolioMetrics['trendRegime'] = 'sideways';
@@ -219,11 +219,19 @@ export function calculatePortfolioMetrics(
   };
 }
 
+const STABLECOINS = new Set([
+  'USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'DAI', 'BUSD', 'PYUSD', 'USD1', 'RLUSD'
+]);
+
 export function generatePortfolios(observations: MarketObservation[], historicalData: Map<string, OHLCVBar[]>): Portfolio[] {
   const now = Date.now();
   const portfolios: Portfolio[] = [];
   const sorted = [...observations]
-    .filter(o => o.volume24h !== null && o.volume24h! > 0)
+    .filter(o =>
+      o.volume24h !== null &&
+      o.volume24h! > 0 &&
+      !STABLECOINS.has(o.canonicalSymbol.toUpperCase())
+    )
     .sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0));
 
   const topAssets = sorted.slice(0, 20);
@@ -261,6 +269,50 @@ export function generatePortfolios(observations: MarketObservation[], historical
   return portfolios;
 }
 
+
+function capAndRedistributeWeights(rawWeights: number[], maxWeight: number = 0.35): number[] {
+  const n = rawWeights.length;
+  if (n === 0) return [];
+  if (n * maxWeight < 1 - 1e-9) {
+    throw new Error(`Cannot allocate 100% across ${n} assets with max weight ${maxWeight}`);
+  }
+
+  const raw = rawWeights.map(weight => Math.max(0, weight));
+  const result = new Array(n).fill(0);
+  const active = new Set(raw.map((_, index) => index));
+  let remaining = 1;
+
+  while (active.size > 0 && remaining > 1e-12) {
+    const totalRaw = Array.from(active).reduce((sum, index) => sum + raw[index], 0);
+    const denominator = totalRaw > 0 ? totalRaw : active.size;
+    let cappedAny = false;
+
+    for (const index of Array.from(active)) {
+      const share = totalRaw > 0 ? raw[index] / denominator : 1 / active.size;
+      const proposed = remaining * share;
+      if (proposed > maxWeight + 1e-12) {
+        result[index] = maxWeight;
+        remaining -= maxWeight;
+        active.delete(index);
+        cappedAny = true;
+      }
+    }
+
+    if (!cappedAny) {
+      const total = Array.from(active).reduce((sum, index) => sum + raw[index], 0);
+      for (const index of active) {
+        const share = total > 0 ? raw[index] / total : 1 / active.size;
+        result[index] = remaining * share;
+      }
+      remaining = 0;
+    }
+  }
+
+  const sum = result.reduce((total, weight) => total + weight, 0);
+  if (sum <= 0) return new Array(n).fill(1 / n);
+  return result.map(weight => weight / sum);
+}
+
 function createPortfolio(
   letter: string,
   name: string,
@@ -281,11 +333,7 @@ function createPortfolio(
   }
 
   const invVols = symbols.map(s => 1 / volMap.get(s)!);
-  const totalInvVol = invVols.reduce((s, v) => s + v, 0);
-  const weights = invVols.map(v => v / totalInvVol);
-  const cappedWeights = weights.map(w => Math.min(w, 0.35));
-  const cappedTotal = cappedWeights.reduce((s, w) => s + w, 0);
-  const normalizedWeights = cappedWeights.map(w => w / cappedTotal);
+  const normalizedWeights = capAndRedistributeWeights(invVols, 0.35);
 
   const assets: PortfolioAsset[] = symbols.map((sym, i) => {
     const obs = observations.find(o => o.canonicalSymbol === sym);
