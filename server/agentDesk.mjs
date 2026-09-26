@@ -175,21 +175,30 @@ export function createAgentDesk(deps) {
       pushEvent("prochart", "Agent browser opened ProChart: " + (title || "ProChart"), { action: "open" });
 
       const symbolLiteral = JSON.stringify(symbol);
-      const pickerOpened = await cdp.evaluate(
-        "(()=>{const buttons=Array.from(document.querySelectorAll('button'));const b=buttons.find(x=>x.querySelector('svg.lucide-search')&&x.querySelector('span.font-semibold'));if(!b)return false;b.click();return true;})()"
-      );
-      if (pickerOpened) await new Promise(function (resolve) { setTimeout(resolve, 450); });
-
-      let typed = await cdp.evaluate(
-        "(()=>{const s=" + symbolLiteral + ";const i=document.querySelector('input[placeholder*=\"Search symbol\" i],input[placeholder*=\"symbol\" i],input[role=\"combobox\"]');if(!i)return false;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,s);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));return true;})()"
-      );
-      if (typed) await new Promise(function (resolve) { setTimeout(resolve, 650); });
-
-      let selected = await cdp.evaluate(
-        "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"option\"],[data-slot=\"command-item\"],[cmdk-item]'));let target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t===s||t.startsWith(s+'\\n');});if(!target){const all=Array.from(document.querySelectorAll('*')).filter(x=>{const t=(x.textContent||'').trim();return t===s;});target=all.map(x=>x.closest('button,[role=\"option\"],[data-slot=\"command-item\"],[cmdk-item]')||x).find(Boolean);}if(!target)return false;target.click();return true;})()"
+      const currentSymbol = await cdp.evaluate(
+        "(()=>{const buttons=Array.from(document.querySelectorAll('button'));const b=buttons.find(x=>x.querySelector('svg.lucide-search')&&x.querySelector('span.font-semibold'));const s=b&&b.querySelector('span.font-semibold');return s?(s.textContent||'').trim():'';})()"
       );
 
-      actions.push({ action: "symbol_picker", ok: Boolean(pickerOpened), detail: symbol });
+      let pickerOpened = false;
+      let selected = String(currentSymbol || "").toUpperCase() === symbol.toUpperCase();
+
+      if (!selected) {
+        pickerOpened = await cdp.evaluate(
+          "(()=>{const buttons=Array.from(document.querySelectorAll('button'));const b=buttons.find(x=>x.querySelector('svg.lucide-search')&&x.querySelector('span.font-semibold'));if(!b)return false;b.click();return true;})()"
+        );
+        if (pickerOpened) await new Promise(function (resolve) { setTimeout(resolve, 450); });
+
+        const typed = await cdp.evaluate(
+          "(()=>{const s=" + symbolLiteral + ";const i=document.querySelector('input[placeholder*=\"Search symbol\" i],input[placeholder*=\"symbol\" i],input[role=\"combobox\"]');if(!i)return false;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,s);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));return true;})()"
+        );
+        if (typed) await new Promise(function (resolve) { setTimeout(resolve, 650); });
+
+        selected = await cdp.evaluate(
+          "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"option\"],[data-slot=\"command-item\"],[cmdk-item]'));let target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t===s||t.startsWith(s+'\\n');});if(!target){const all=Array.from(document.querySelectorAll('*')).filter(x=>{const t=(x.textContent||'').trim();return t===s;});target=all.map(x=>x.closest('button,[role=\"option\"],[data-slot=\"command-item\"],[cmdk-item]')||x).find(Boolean);}if(!target)return false;target.click();return true;})()"
+        );
+      }
+
+      actions.push({ action: "symbol_picker", ok: selected ? true : Boolean(pickerOpened), detail: symbol });
       actions.push({ action: "symbol", ok: Boolean(selected), detail: symbol });
       pushEvent(
         "prochart",
@@ -245,10 +254,20 @@ export function createAgentDesk(deps) {
     });
   }
 
+  function explicitProChartCommand(command) {
+    const text = String(command || "").toLowerCase();
+    if (/\b(do not|don't|dont|no)\s+(open|use|run|inspect|check)\b[^.]*\b(prochart|chart|backtest|indicator|strategy tester)\b/i.test(text)) {
+      return false;
+    }
+    return /prochart|chart|backtest|indicator|strategy tester/i.test(text);
+  }
+
   function explicitInvestmentCommand(command) {
     const text = String(command || "").toLowerCase();
-    if (/\b(do not|don't|dont|no)\s+(invest|execute|buy|rebalance|deploy)/i.test(text)) return false;
-    return /\b(invest|execute|buy|start paper|paper invest|deploy capital|rebalance)\b/i.test(text);
+    if (/\b(do not|don't|dont|no)\s+(invest|execute|buy|rebalance|deploy|allocate|simulate)/i.test(text)) return false;
+    const paperAction = /\bpaper\b/i.test(text) &&
+      /\b(invest|execute|buy|deploy|rebalance|allocate|allocation|simulate|simulation)\b/i.test(text);
+    return paperAction || /\b(invest|execute|buy|start paper|paper invest|deploy capital|rebalance)\b/i.test(text);
   }
 
   function choosePortfolio(command, context) {
@@ -433,7 +452,7 @@ export function createAgentDesk(deps) {
     pushEvent("command", "Command received: " + command, { jobId: jobId });
 
     let proChart = null;
-    if (/prochart|chart|backtest|indicator|strategy tester/i.test(command)) {
+    if (explicitProChartCommand(command)) {
       try {
         pushEvent("prochart", "Starting a real VPS browser session for ProChart", { jobId: jobId });
         proChart = await runProChart(command);
