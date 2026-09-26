@@ -175,30 +175,29 @@ export function createAgentDesk(deps) {
       pushEvent("prochart", "Agent browser opened ProChart: " + (title || "ProChart"), { action: "open" });
 
       const symbolLiteral = JSON.stringify(symbol);
-      const opened = await cdp.evaluate(
-        "(()=>{const b=Array.from(document.querySelectorAll('button')).find(x=>x.innerText.trim().split('\\n')[0]==='BTCUSDT'||x.innerText.trim().split('\\n')[0]===" + symbolLiteral + ");if(!b)return false;b.click();return true;})()"
+      let selected = await cdp.evaluate(
+        "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"button\"]'));const target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t===s||t.startsWith(s+'\\n');});if(!target)return false;target.click();return true;})()"
       );
-      if (opened) {
-        await new Promise(function (resolve) { setTimeout(resolve, 450); });
+
+      if (!selected) {
         const typed = await cdp.evaluate(
-          "(()=>{const s=" + symbolLiteral + ";const i=document.querySelector('input[placeholder*=\"Search symbol\"]');if(!i)return false;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,s);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));return true;})()"
+          "(()=>{const s=" + symbolLiteral + ";const i=document.querySelector('input[placeholder*=\"Search symbol\"],input[placeholder*=\"symbol\" i]');if(!i)return false;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,s);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));return true;})()"
         );
-        if (typed) await new Promise(function (resolve) { setTimeout(resolve, 500); });
-        const selected = await cdp.evaluate(
-          "(()=>{const s=" + symbolLiteral + ";const bs=Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim().split('\\n')[0]===s);const t=bs[bs.length-1];if(!t)return false;t.click();return true;})()"
-        );
-        await new Promise(function (resolve) { setTimeout(resolve, 900); });
-        const activeSymbol = await cdp.evaluate(
-          "(()=>{const b=Array.from(document.querySelectorAll('button')).find(x=>/^[A-Z0-9#]+USDT\\n/.test(x.innerText.trim()));return b?b.innerText.trim().split('\\n')[0]:null;})()"
-        );
-        const symbolOk = Boolean(selected && activeSymbol === symbol);
-        actions.push({ action: "symbol", ok: symbolOk, detail: activeSymbol || symbol });
-        pushEvent(
-          "prochart",
-          (symbolOk ? "Selected " : "Could not verify selection of ") + symbol + " in ProChart",
-          { action: "symbol", symbol: symbol, activeSymbol: activeSymbol }
-        );
+        if (typed) {
+          await new Promise(function (resolve) { setTimeout(resolve, 650); });
+          selected = await cdp.evaluate(
+            "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"button\"]'));const target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t.startsWith(s+'\\n');});if(!target)return false;target.click();return true;})()"
+          );
+        }
       }
+
+      actions.push({ action: "symbol", ok: Boolean(selected), detail: symbol });
+      pushEvent(
+        "prochart",
+        (selected ? "Selected " : "Could not select ") + symbol + " in ProChart",
+        { action: "symbol", symbol: symbol }
+      );
+      if (selected) await new Promise(function (resolve) { setTimeout(resolve, 900); });
 
       if (wantsIndicators) {
         const clicked = await cdp.evaluate(
