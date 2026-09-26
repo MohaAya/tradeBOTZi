@@ -242,7 +242,14 @@ export function generatePortfolios(observations: MarketObservation[], historical
   const hasOnlyCrypto = topAssets.every(a => a.assetClass === 'crypto');
   const universeLabel = hasOnlyCrypto ? 'CRYPTO-ONLY UNIVERSE' : 'MULTI-ASSET UNIVERSE';
 
-  const momentumAssets = symbolsWithData.slice(0, Math.min(5, symbolsWithData.length));
+  const momentumAssets = [...symbolsWithData]
+    .map(symbol => {
+      const bars = historicalData.get(symbol) || [];
+      return { symbol, score: calculateMomentumScore(calculateReturns(bars.map(b => b.close))) };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.min(5, symbolsWithData.length))
+    .map(item => item.symbol);
   portfolios.push(createPortfolio('A', 'Momentum Leaders', 'Top momentum crypto assets with inverse-volatility weighting', 'crypto_derivatives', momentumAssets, historicalData, observations, universeLabel, now));
 
   const largeCaps = symbolsWithData.slice(0, Math.min(6, symbolsWithData.length));
