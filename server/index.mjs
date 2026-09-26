@@ -255,11 +255,16 @@ const chatJobs = new Map();
 function createJobId() {
   return `chat-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
-async function runChatJob(messages) {
+async function runChatJob(messages, preferredProvider = "omniroute") {
   const attempts = [];
-  for (const [provider, fn] of [
+  const providers = [
     ["omniroute", omniChat], ["freellm", freeLlmChat], ["ollama", ollamaChat], ["hermes", hermesChat]
-  ]) {
+  ];
+  const orderedProviders = [
+    ...providers.filter(([provider]) => provider === preferredProvider),
+    ...providers.filter(([provider]) => provider !== preferredProvider),
+  ];
+  for (const [provider, fn] of orderedProviders) {
     try {
       const started = Date.now();
       const result = await fn(messages);
@@ -323,16 +328,30 @@ const server = http.createServer(async (req, res) => {
         ...(body.message ? [{ role: "user", content: body.message }] : [])
       ];
       const context = body.context ? `\n\nCurrent application state (JSON):\n${JSON.stringify(body.context)}` : "";
+      const role = String(body.agentRole || "Portfolio Manager");
+      const preferredProvider = ["omniroute", "freellm", "ollama", "hermes"].includes(body.preferredProvider)
+        ? body.preferredProvider
+        : "omniroute";
+      const roleInstructions = {
+        "Portfolio Manager": "Design and compare diversified portfolios. Explain allocations and tradeoffs. Do not invent market data.",
+        "Risk Manager": "Stress-test portfolio risk, drawdown, concentration, liquidity and data quality. Veto unsafe PAPER actions.",
+        "Technical Analyst": "Analyze trends, momentum, volatility and technical setup using supplied market state. Do not claim to have clicked or read ProChart unless explicit chart data is supplied.",
+        "Liquidity Analyst": "Evaluate liquidity, spreads, execution quality and turnover risk.",
+        "Derivatives Analyst": "Evaluate perpetual/funding/basis conditions when those fields are available. State when data is unavailable.",
+        "Bull Case": "Construct the strongest evidence-based case for the selected portfolio while stating assumptions.",
+        "Bear Case": "Challenge the selected portfolio and identify failure modes and invalidation conditions.",
+        "Investment Synthesizer": "Synthesize the other evidence into a clear PAPER-investment recommendation, but never override deterministic risk limits."
+      };
       const messages = [
         {
           role: "system",
-          content: "You are the tradeBOTZi research copilot. Use only supplied application state for portfolio and market facts. Clearly separate calculated facts from interpretation. PAPER/research only." + context
+          content: `You are a tradeBOTZi agent operating as ${role}. ${roleInstructions[role] || roleInstructions["Portfolio Manager"]} Use only supplied application state for portfolio and market facts. Clearly separate calculated facts from interpretation. PAPER/research only. You cannot bypass the deterministic risk engine or place real-money orders.` + context
         },
         ...supplied
       ];
       const jobId = createJobId();
-      chatJobs.set(jobId, { status: "pending", createdAt: Date.now() });
-      runChatJob(messages).then(result => {
+      chatJobs.set(jobId, { status: "pending", createdAt: Date.now(), role, preferredProvider });
+      runChatJob(messages, preferredProvider).then(result => {
         chatJobs.set(jobId, { status: result.ok ? "done" : "error", result, finishedAt: Date.now() });
       }).catch(error => {
         chatJobs.set(jobId, { status: "error", result: { ok: false, error: String(error) }, finishedAt: Date.now() });
