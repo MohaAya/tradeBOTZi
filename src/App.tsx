@@ -18,6 +18,8 @@ import { compareAcrossVenues } from './lib/providers';
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'agents', label: 'Trading Agents', icon: Users },
+  { id: 'agent-desk', label: 'Agent Desk', icon: Brain },
+  { id: 'prochart', label: 'ProChart', icon: Globe },
   { id: 'portfolio-builder', label: 'Portfolio Builder', icon: Layers },
   { id: 'evaluation', label: 'Evaluation', icon: Target },
   { id: 'ranking', label: 'Ranking & AI', icon: Trophy },
@@ -65,6 +67,8 @@ function Sidebar({ activeTab, onTabChange }: { activeTab: string; onTabChange: (
 // IMPORT DASHBOARD
 // ============================================================
 import Dashboard from './components/Dashboard';
+import AgentDesk from './components/AgentDesk';
+import ProChartDesk from './components/ProChartDesk';
 
 // ============================================================
 // AGENTS PANEL
@@ -1100,6 +1104,8 @@ export default function App() {
     switch (activeTab) {
       case 'dashboard': return <Dashboard store={store} />;
       case 'agents': return <AgentsPanel store={store} />;
+      case 'agent-desk': return <AgentDesk store={store} onOpenProChart={() => setActiveTab('prochart')} />;
+      case 'prochart': return <ProChartDesk store={store} />;
       case 'portfolio-builder': return <PortfolioBuilder store={store} />;
       case 'evaluation': return <PortfolioEvaluation store={store} />;
       case 'ranking': return <RankingView store={store} />;
