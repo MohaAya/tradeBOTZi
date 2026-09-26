@@ -175,29 +175,28 @@ export function createAgentDesk(deps) {
       pushEvent("prochart", "Agent browser opened ProChart: " + (title || "ProChart"), { action: "open" });
 
       const symbolLiteral = JSON.stringify(symbol);
+      const pickerOpened = await cdp.evaluate(
+        "(()=>{const buttons=Array.from(document.querySelectorAll('button'));const b=buttons.find(x=>x.querySelector('svg.lucide-search')&&x.querySelector('span.font-semibold'));if(!b)return false;b.click();return true;})()"
+      );
+      if (pickerOpened) await new Promise(function (resolve) { setTimeout(resolve, 450); });
+
+      let typed = await cdp.evaluate(
+        "(()=>{const s=" + symbolLiteral + ";const i=document.querySelector('input[placeholder*=\"Search symbol\" i],input[placeholder*=\"symbol\" i],input[role=\"combobox\"]');if(!i)return false;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,s);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));return true;})()"
+      );
+      if (typed) await new Promise(function (resolve) { setTimeout(resolve, 650); });
+
       let selected = await cdp.evaluate(
-        "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"button\"]'));const target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t===s||t.startsWith(s+'\\n');});if(!target)return false;target.click();return true;})()"
+        "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"option\"],[data-slot=\"command-item\"],[cmdk-item]'));let target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t===s||t.startsWith(s+'\\n');});if(!target){const all=Array.from(document.querySelectorAll('*')).filter(x=>{const t=(x.textContent||'').trim();return t===s;});target=all.map(x=>x.closest('button,[role=\"option\"],[data-slot=\"command-item\"],[cmdk-item]')||x).find(Boolean);}if(!target)return false;target.click();return true;})()"
       );
 
-      if (!selected) {
-        const typed = await cdp.evaluate(
-          "(()=>{const s=" + symbolLiteral + ";const i=document.querySelector('input[placeholder*=\"Search symbol\"],input[placeholder*=\"symbol\" i]');if(!i)return false;const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;set.call(i,s);i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));return true;})()"
-        );
-        if (typed) {
-          await new Promise(function (resolve) { setTimeout(resolve, 650); });
-          selected = await cdp.evaluate(
-            "(()=>{const s=" + symbolLiteral + ";const nodes=Array.from(document.querySelectorAll('button,[role=\"button\"]'));const target=nodes.find(x=>{const t=(x.innerText||x.textContent||'').trim();const first=t.split('\\n')[0].trim();return first===s||t.startsWith(s+'\\n');});if(!target)return false;target.click();return true;})()"
-          );
-        }
-      }
-
+      actions.push({ action: "symbol_picker", ok: Boolean(pickerOpened), detail: symbol });
       actions.push({ action: "symbol", ok: Boolean(selected), detail: symbol });
       pushEvent(
         "prochart",
         (selected ? "Selected " : "Could not select ") + symbol + " in ProChart",
         { action: "symbol", symbol: symbol }
       );
-      if (selected) await new Promise(function (resolve) { setTimeout(resolve, 900); });
+      if (selected) await new Promise(function (resolve) { setTimeout(resolve, 1200); });
 
       if (wantsIndicators) {
         const clicked = await cdp.evaluate(
