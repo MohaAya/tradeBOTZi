@@ -176,7 +176,7 @@ export function createAgentDesk(deps) {
 
       const symbolLiteral = JSON.stringify(symbol);
       const opened = await cdp.evaluate(
-        "(()=>{const s=" + symbolLiteral + ";const b=Array.from(document.querySelectorAll('button')).find(x=>x.innerText.trim()==='BTCUSDT'||x.innerText.trim()===s);if(!b)return false;b.click();return true;})()"
+        "(()=>{const b=Array.from(document.querySelectorAll('button')).find(x=>x.innerText.trim().split('\\n')[0]==='BTCUSDT'||x.innerText.trim().split('\\n')[0]===" + symbolLiteral + ");if(!b)return false;b.click();return true;})()"
       );
       if (opened) {
         await new Promise(function (resolve) { setTimeout(resolve, 450); });
@@ -187,13 +187,17 @@ export function createAgentDesk(deps) {
         const selected = await cdp.evaluate(
           "(()=>{const s=" + symbolLiteral + ";const bs=Array.from(document.querySelectorAll('button')).filter(b=>b.innerText.trim().split('\\n')[0]===s);const t=bs[bs.length-1];if(!t)return false;t.click();return true;})()"
         );
-        actions.push({ action: "symbol", ok: Boolean(selected), detail: symbol });
+        await new Promise(function (resolve) { setTimeout(resolve, 900); });
+        const activeSymbol = await cdp.evaluate(
+          "(()=>{const b=Array.from(document.querySelectorAll('button')).find(x=>/^[A-Z0-9#]+USDT\\n/.test(x.innerText.trim()));return b?b.innerText.trim().split('\\n')[0]:null;})()"
+        );
+        const symbolOk = Boolean(selected && activeSymbol === symbol);
+        actions.push({ action: "symbol", ok: symbolOk, detail: activeSymbol || symbol });
         pushEvent(
           "prochart",
-          (selected ? "Selected " : "Could not select ") + symbol + " in ProChart",
-          { action: "symbol", symbol: symbol }
+          (symbolOk ? "Selected " : "Could not verify selection of ") + symbol + " in ProChart",
+          { action: "symbol", symbol: symbol, activeSymbol: activeSymbol }
         );
-        await new Promise(function (resolve) { setTimeout(resolve, 600); });
       }
 
       if (wantsIndicators) {
