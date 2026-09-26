@@ -187,6 +187,14 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
         </button>
       </div>
 
+      {portfolios.length > 0 && !portfoliosLoading && (
+        <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
+          <p className="text-emerald-400 text-sm font-medium">
+            Portfolio generation complete: {portfolios.length} portfolios generated from {markets.length} live market observations.
+          </p>
+        </div>
+      )}
+
       {marketsError && (
         <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3">
           <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
