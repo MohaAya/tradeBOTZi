@@ -202,37 +202,128 @@ export function useAppStore(): AppStore {
   }, []);
 
   const startPaper = useCallback((portfolioId: string) => {
+    const portfolio = portfolios.find(p => p.id === portfolioId);
+    if (!portfolio) return;
+
+    if (portfolio.status === 'disqualified') {
+      setMarketsError(`Cannot start PAPER investing: ${portfolio.disqualificationReason || 'portfolio is disqualified'}`);
+      return;
+    }
+
+    const maxWeight = settings.portfolio.maxSingleAssetWeight;
+    const oversized = portfolio.assets.find(a => a.weight > maxWeight + 1e-9);
+    if (oversized) {
+      setMarketsError(
+        `Risk gate rejected PAPER execution: ${oversized.canonicalSymbol} weight ${(oversized.weight * 100).toFixed(1)}% exceeds ${(maxWeight * 100).toFixed(1)}% limit.`
+      );
+      return;
+    }
+
+    const assumptions = {
+      feesPercent: 0.1,
+      spreadPercent: 0.05,
+      slippagePercent: 0.02,
+      fillDelayMs: 100,
+    };
+
+    const capital = settings.portfolio.defaultCapital;
+    const reserveFraction = Math.max(0, Math.min(0.5, settings.portfolio.minimumCashReserve));
+    const investableCapital = capital * (1 - reserveFraction);
+    const validAssets = portfolio.assets
+      .map(asset => {
+        const observation = markets
+          .filter(m => m.canonicalSymbol === asset.canonicalSymbol && m.price !== null)
+          .sort((a, b) => b.receivedAt - a.receivedAt)[0];
+        return observation?.price ? { asset, price: observation.price } : null;
+      })
+      .filter(Boolean) as { asset: Portfolio['assets'][number]; price: number }[];
+
+    if (validAssets.length < 3) {
+      setMarketsError('Risk gate rejected PAPER execution: fewer than three portfolio assets have live prices.');
+      return;
+    }
+
+    const validWeightTotal = validAssets.reduce((sum, x) => sum + x.asset.weight, 0);
+    const now = Date.now();
+    let cash = capital;
+    let totalFees = 0;
+
+    const transactions = validAssets.map(({ asset, price }, index) => {
+      const normalizedWeight = validWeightTotal > 0 ? asset.weight / validWeightTotal : 1 / validAssets.length;
+      const targetGross = investableCapital * normalizedWeight;
+      const fillPrice = price * (1 + (assumptions.spreadPercent + assumptions.slippagePercent) / 100);
+      const fee = targetGross * assumptions.feesPercent / 100;
+      const quantity = Math.max(0, (targetGross - fee) / fillPrice);
+      const total = quantity * fillPrice + fee;
+      cash -= total;
+      totalFees += fee;
+      return {
+        id: `paper-${portfolioId}-${now}-${index}`,
+        portfolioId,
+        timestamp: now + index * assumptions.fillDelayMs,
+        canonicalSymbol: asset.canonicalSymbol,
+        provider: asset.provider,
+        side: 'BUY' as const,
+        quantity,
+        price: fillPrice,
+        fees: fee,
+        total,
+        simulated: true as const,
+        assumptions,
+      };
+    });
+
+    const positions = transactions.map(tx => {
+      const currentPrice = markets.find(m => m.canonicalSymbol === tx.canonicalSymbol && m.price !== null)?.price ?? tx.price;
+      const marketValue = tx.quantity * currentPrice;
+      return {
+        canonicalSymbol: tx.canonicalSymbol,
+        provider: tx.provider,
+        quantity: tx.quantity,
+        averageCost: tx.price,
+        currentPrice,
+        marketValue,
+        unrealizedPnl: marketValue - tx.quantity * tx.price,
+      };
+    });
+
+    const equity = cash + positions.reduce((sum, p) => sum + p.marketValue, 0);
+    const account = {
+      portfolioId,
+      initialCapital: capital,
+      cash,
+      positions,
+      realizedPnl: 0,
+      unrealizedPnl: positions.reduce((sum, p) => sum + p.unrealizedPnl, 0),
+      totalFees,
+      totalFunding: 0,
+      equity,
+      peakEquity: capital,
+      drawdown: Math.min(0, (equity - capital) / capital),
+      transactions,
+      startedAt: now,
+      status: 'active' as const,
+      assumptions,
+    };
+
     setPortfolios(prev => {
-      const updated = prev.map(p => {
-        if (p.id === portfolioId) {
-          return {
-            ...p,
-            status: 'paper_active' as const,
-            paperAccount: {
-              portfolioId,
-              initialCapital: settings.portfolio.defaultCapital,
-              cash: settings.portfolio.defaultCapital,
-              positions: [],
-              realizedPnl: 0,
-              unrealizedPnl: 0,
-              totalFees: 0,
-              totalFunding: 0,
-              equity: settings.portfolio.defaultCapital,
-              peakEquity: settings.portfolio.defaultCapital,
-              drawdown: 0,
-              transactions: [],
-              startedAt: Date.now(),
-              status: 'active' as const,
-              assumptions: { feesPercent: 0.1, spreadPercent: 0.05, slippagePercent: 0.02, fillDelayMs: 100 },
-            },
-          };
-        }
-        return p;
-      });
+      const updated = prev.map(p =>
+        p.id === portfolioId
+          ? { ...p, status: 'paper_active' as const, paperAccount: account }
+          : p
+      );
       savePortfolios(updated);
       return updated;
     });
-  }, [settings]);
+
+    setPaperTransactions(prev => {
+      const updated = [...transactions, ...prev].slice(0, 1000);
+      savePaperTransactions(updated);
+      return updated;
+    });
+
+    setMarketsError(null);
+  }, [markets, portfolios, settings]);
 
   const pausePaper = useCallback((portfolioId: string) => {
     setPortfolios(prev => {
