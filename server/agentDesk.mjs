@@ -1214,6 +1214,12 @@ export function createAgentDesk(deps) {
       error: null
     };
 
+    pushEvent("supervisor_start", "PAPER Portfolio Supervisor cycle started", {
+      cycleId: cycleId,
+      reason: reason || "interval",
+      supervisor: true
+    });
+
     try {
       const activeAccounts = Object.values(paperState.accounts || {}).filter(function (account) {
         return account && account.status === "active";
@@ -1232,7 +1238,7 @@ export function createAgentDesk(deps) {
         runRecord.actions = [];
         paperState.supervisorRuns = paperState.supervisorRuns.concat([runRecord]).slice(-200);
         saveSupervisorState();
-        return Object.assign({ cycleId: cycleId }, publicSupervisorState());
+        return Object.assign({}, publicSupervisorState(), { cycleId: cycleId, running: false, currentCycleId: null });
       }
 
       const snapshot = await serverMarketSnapshot();
@@ -1366,7 +1372,7 @@ export function createAgentDesk(deps) {
         supervisor: true
       });
 
-      return Object.assign({ cycleId: cycleId, actions: actions }, publicSupervisorState());
+      return Object.assign({}, publicSupervisorState(), { cycleId: cycleId, actions: actions, running: false, currentCycleId: null });
     } catch (error) {
       supervisorState.lastError = String(error);
       supervisorState.lastCycleAt = now;
