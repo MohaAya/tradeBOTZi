@@ -216,6 +216,8 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
   }, []);
 
 
+  const supervisorHealthy = supervisor?.healthy === true;
+  const supervisorStatus = supervisor?.status ?? 'CHECKING';
   const pct = (value: number | null | undefined, digits = 1) =>
     value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(digits)}%`;
   const num = (value: number | null | undefined, digits = 2) =>
@@ -291,7 +293,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
       full:
         `Analyze portfolio ${selectedPortfolio.id} in depth. Explain its mandate, why each asset belongs, risk level, historical return, volatility, maximum drawdown, VaR, CVaR, Sharpe, Sortino, Omega, Ulcer Index, recovery factor, concentration, correlation, liquidity, estimated trading friction, current regime fit, invalidation conditions, and what should be monitored before PAPER execution. Challenge weak assumptions. Do not invest and do not open ProChart.`,
       simple:
-        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Clearly distinguish initial allocation controls from continuous PAPER Portfolio Supervisor behavior. The supervisor is active on the VPS and may execute simulated stops, take-profits, trailing stops, cooldown-aware rebalancing, and portfolio drawdown risk-off actions. Treat the performance figures as holdout historical diagnostics, not forecasts. Do not invest and do not open ProChart.`,
+        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Clearly distinguish initial allocation controls from continuous PAPER Portfolio Supervisor behavior. The live PAPER Portfolio Supervisor status is ${supervisorStatus}. Only describe automatic mark-to-market, stops, take-profits, trailing stops, cooldown-aware rebalancing, or portfolio drawdown risk-off as active when this status is ACTIVE. Treat the performance figures as holdout historical diagnostics, not forecasts. Do not invest and do not open ProChart.`,
       challenge:
         `Act as a hostile investment committee reviewing portfolio ${selectedPortfolio.id}. Identify concentration, correlation, tail-risk, liquidity, regime, cost, data-quality, and construction weaknesses. Suggest deterministic checks or portfolio changes, but do not execute and do not open ProChart.`,
     };
@@ -566,15 +568,18 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
                   <p className="text-emerald-300 text-xs font-medium">Enforced now in PAPER allocation</p>
                   <p className="text-gray-400 text-[11px] mt-1">Maximum asset weight, portfolio exposure, cash reserve, and simulated fees/spread/slippage.</p>
                 </div>
-                <div className={`border rounded-lg p-3 ${supervisor?.enabled ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20'}`}>
-                  <p className={`text-xs font-medium ${supervisor?.enabled ? 'text-emerald-300' : 'text-red-300'}`}>
-                    Continuous PAPER supervisor {supervisor?.enabled ? 'ACTIVE' : 'OFFLINE'}
+                <div className={`border rounded-lg p-3 ${supervisor == null ? 'bg-amber-500/5 border-amber-500/20' : supervisorHealthy ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20'}`}>
+                  <p className={`text-xs font-medium ${supervisor == null ? 'text-amber-300' : supervisorHealthy ? 'text-emerald-300' : 'text-red-300'}`}>
+                    Continuous PAPER supervisor {supervisorStatus}
                   </p>
                   <p className="text-gray-400 text-[11px] mt-1">
-                    Stop-loss, take-profit, trailing stop, cooldown-aware scheduled rebalance, mark-to-market, and portfolio drawdown risk-off checks run on the VPS every {supervisor?.intervalMs ? Math.round(supervisor.intervalMs / 1000) : '—'} seconds.
+                    {supervisorHealthy
+                      ? `Stop-loss, take-profit, trailing stop, cooldown-aware scheduled rebalance, mark-to-market, and portfolio drawdown risk-off checks are running on the VPS every ${supervisor?.intervalMs ? Math.round(supervisor.intervalMs / 1000) : '—'} seconds.`
+                      : 'Supervisor heartbeat is not currently verified. Automatic PAPER monitoring and exits should not be assumed until status returns ACTIVE.'}
                   </p>
                   <p className="text-gray-600 text-[10px] mt-1">
                     Last successful cycle: {supervisor?.lastSuccessAt ? new Date(supervisor.lastSuccessAt).toLocaleTimeString() : '—'}
+                    {supervisor?.heartbeatAgeMs != null ? ` · heartbeat ${Math.round(supervisor.heartbeatAgeMs / 1000)}s ago` : ''}
                   </p>
                 </div>
               </div>

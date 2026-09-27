@@ -87,8 +87,28 @@ export function createAgentDesk(deps) {
     const persistedSupervisorOrders = (paperState.orders || []).filter(function (order) {
       return order && order.supervisor === true && !String(order.portfolioId || "").startsWith("TEST-SUP");
     }).length;
+    const now = Date.now();
+    const staleAfterMs = Math.max(45000, supervisorIntervalMs * 3);
+    const lastSuccessAt = Number(supervisorState.lastSuccessAt) || 0;
+    const heartbeatAgeMs = lastSuccessAt > 0 ? Math.max(0, now - lastSuccessAt) : null;
+    const healthy = supervisorState.enabled === true &&
+      lastSuccessAt > 0 &&
+      heartbeatAgeMs !== null &&
+      heartbeatAgeMs <= staleAfterMs &&
+      !supervisorState.lastError;
+    const status = supervisorState.enabled !== true
+      ? "OFFLINE"
+      : lastSuccessAt <= 0
+        ? "STARTING"
+        : healthy
+          ? "ACTIVE"
+          : "STALE";
     return Object.assign({}, supervisorState, {
       running: supervisorBusy,
+      healthy: healthy,
+      status: status,
+      staleAfterMs: staleAfterMs,
+      heartbeatAgeMs: heartbeatAgeMs,
       totalActions: persistedSupervisorOrders,
       accountCount: Object.values(paperState.accounts || {}).filter(function (account) {
         return account && account.status === "active";
