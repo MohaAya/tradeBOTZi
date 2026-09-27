@@ -372,6 +372,27 @@ const STABLECOINS = new Set([
   'USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'DAI', 'BUSD', 'PYUSD', 'USD1', 'RLUSD'
 ]);
 
+function splitHistoricalData(
+  historicalData: Map<string, OHLCVBar[]>,
+  evaluationDays: number = 30
+): { constructionData: Map<string, OHLCVBar[]>; evaluationData: Map<string, OHLCVBar[]> } {
+  const constructionData = new Map<string, OHLCVBar[]>();
+  const evaluationData = new Map<string, OHLCVBar[]>();
+
+  for (const [symbol, bars] of historicalData.entries()) {
+    const ordered = [...bars].sort((a, b) => a.timestamp - b.timestamp);
+    if (ordered.length < evaluationDays + 60) continue;
+    const splitIndex = ordered.length - evaluationDays;
+    const construction = ordered.slice(0, splitIndex);
+    const evaluation = ordered.slice(Math.max(0, splitIndex - 1));
+    if (construction.length >= 60 && evaluation.length >= evaluationDays) {
+      constructionData.set(symbol, construction);
+      evaluationData.set(symbol, evaluation);
+    }
+  }
+  return { constructionData, evaluationData };
+}
+
 export function generatePortfolios(observations: MarketObservation[], historicalData: Map<string, OHLCVBar[]>): Portfolio[] {
   const now = Date.now();
   const portfolios: Portfolio[] = [];
@@ -385,14 +406,18 @@ export function generatePortfolios(observations: MarketObservation[], historical
 
   const topAssets = sorted.slice(0, 20);
   if (topAssets.length < 3) return [];
-  const symbolsWithData = topAssets.map(a => a.canonicalSymbol).filter(s => historicalData.has(s));
+
+  const { constructionData, evaluationData } = splitHistoricalData(historicalData, 30);
+  const symbolsWithData = topAssets
+    .map(a => a.canonicalSymbol)
+    .filter(s => constructionData.has(s) && evaluationData.has(s));
   if (symbolsWithData.length < 3) return [];
 
   const hasOnlyCrypto = topAssets.every(a => a.assetClass === 'crypto');
   const universeLabel = hasOnlyCrypto ? 'CRYPTO-ONLY UNIVERSE' : 'MULTI-ASSET UNIVERSE';
 
   const momentumAssets = [...symbolsWithData]
-    .map(symbol => ({ symbol, score: calculateMomentumScore(alignedSymbolReturns(symbol, historicalData)) }))
+    .map(symbol => ({ symbol, score: calculateMomentumScore(alignedSymbolReturns(symbol, constructionData)) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.min(5, symbolsWithData.length))
     .map(item => item.symbol);
@@ -400,7 +425,7 @@ export function generatePortfolios(observations: MarketObservation[], historical
     'A', 'Aggressive Growth & Momentum',
     'High-risk growth sleeve selected by measured momentum, then weighted by inverse volatility.',
     'Seek upside from liquid risk assets with strong recent risk-adjusted momentum while accepting materially higher drawdown risk.',
-    '2–8 weeks', 'crypto_derivatives', momentumAssets, historicalData, observations, universeLabel, now
+    '2–8 weeks', 'crypto_derivatives', momentumAssets, constructionData, evaluationData, observations, universeLabel, now
   ));
 
   const largeCaps = symbolsWithData.slice(0, Math.min(6, symbolsWithData.length));
@@ -408,15 +433,15 @@ export function generatePortfolios(observations: MarketObservation[], historical
     'B', 'Core Diversified',
     'Large, liquid crypto assets with volatility-aware weights and a broader diversification mandate.',
     'Provide a core crypto allocation with less concentration than the growth sleeve.',
-    '1–3 months', 'crypto_spot', largeCaps, historicalData, observations, universeLabel, now
+    '1–3 months', 'crypto_spot', largeCaps, constructionData, evaluationData, observations, universeLabel, now
   ));
 
-  const lowCorrAssets = selectLowCorrelationAssets(symbolsWithData.slice(0, 15), historicalData, Math.min(5, symbolsWithData.length));
+  const lowCorrAssets = selectLowCorrelationAssets(symbolsWithData.slice(0, 15), constructionData, Math.min(5, symbolsWithData.length));
   if (lowCorrAssets.length >= 3) portfolios.push(createPortfolio(
     'C', 'Low-Correlation Diversifier',
     'Greedy low-correlation selection designed to reduce overlap between asset return streams.',
     'Reduce portfolio co-movement and concentration risk.',
-    '1–3 months', 'crypto_spot', lowCorrAssets, historicalData, observations, universeLabel, now
+    '1–3 months', 'crypto_spot', lowCorrAssets, constructionData, evaluationData, observations, universeLabel, now
   ));
 
   const liquidAssets = topAssets
@@ -427,12 +452,12 @@ export function generatePortfolios(observations: MarketObservation[], historical
     'D', 'Liquidity First',
     'Concentrates on the most liquid eligible assets to reduce execution friction and slippage.',
     'Prioritize tradability and execution quality while keeping diversified weights.',
-    '2–6 weeks', 'crypto_spot', liquidAssets, historicalData, observations, universeLabel, now
+    '2–6 weeks', 'crypto_spot', liquidAssets, constructionData, evaluationData, observations, universeLabel, now
   ));
 
   const volMap = new Map<string, number>();
   for (const sym of symbolsWithData) {
-    const bars = historicalData.get(sym) || [];
+    const bars = constructionData.get(sym) || [];
     const prices = bars.map(b => b.close);
     volMap.set(sym, calculateVolatility(calculateReturns(prices)));
   }
@@ -441,7 +466,7 @@ export function generatePortfolios(observations: MarketObservation[], historical
     'E', 'Capital Defense',
     'Selects the lowest-volatility eligible assets and uses the largest cash reserve policy.',
     'Reduce volatility and drawdown pressure while retaining market participation.',
-    '1–3 months', 'crypto_spot', lowVolAssets, historicalData, observations, universeLabel, now
+    '1–3 months', 'crypto_spot', lowVolAssets, constructionData, evaluationData, observations, universeLabel, now
   ));
 
   return portfolios;
@@ -499,14 +524,15 @@ function createPortfolio(
   holdingPeriod: string,
   sleeve: Portfolio['sleeve'],
   symbols: string[],
-  historicalData: Map<string, OHLCVBar[]>,
+  constructionData: Map<string, OHLCVBar[]>,
+  evaluationData: Map<string, OHLCVBar[]>,
   observations: MarketObservation[],
   universeLabel: string,
   now: number
 ): Portfolio {
   const volMap = new Map<string, number>();
   for (const sym of symbols) {
-    const bars = historicalData.get(sym) || [];
+    const bars = constructionData.get(sym) || [];
     const prices = bars.map(b => b.close);
     const vol = calculateVolatility(calculateReturns(prices));
     volMap.set(sym, Math.max(vol, 0.01));
@@ -528,7 +554,7 @@ function createPortfolio(
   });
 
   const weightMap = new Map(symbols.map((s, i) => [s, normalizedWeights[i]]));
-  const metrics = calculatePortfolioMetrics(historicalData, weightMap, observations);
+  const metrics = calculatePortfolioMetrics(evaluationData, weightMap, observations);
   const riskPolicy = buildRiskPolicy(letter, metrics);
   const maxWeight = Math.max(...normalizedWeights);
   const executionReady =
@@ -548,7 +574,14 @@ function createPortfolio(
     status: 'evaluated',
     assets,
     generatedAt: now,
-    generatorParams: { method: 'inverse-volatility', cap: 0.35 },
+    generatorParams: {
+      method: 'inverse-volatility',
+      cap: 0.35,
+      constructionMode: 'prior-window',
+      constructionBars: Math.min(...symbols.map(s => constructionData.get(s)?.length || 0)),
+      evaluationMode: 'holdout',
+      evaluationBars: Math.min(...symbols.map(s => evaluationData.get(s)?.length || 0)),
+    },
     dataSnapshotId: `snap-${now}`,
     metrics,
     rank: null,
