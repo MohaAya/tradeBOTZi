@@ -273,7 +273,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
       full:
         `Analyze portfolio ${selectedPortfolio.id} in depth. Explain its mandate, why each asset belongs, risk level, historical return, volatility, maximum drawdown, VaR, CVaR, Sharpe, Sortino, Omega, Ulcer Index, recovery factor, concentration, correlation, liquidity, estimated trading friction, current regime fit, invalidation conditions, and what should be monitored before PAPER execution. Challenge weak assumptions. Do not invest and do not open ProChart.`,
       simple:
-        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Do not invest and do not open ProChart.`,
+        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Clearly distinguish controls enforced at initial PAPER allocation from policy rules that are merely stored and are not yet continuously automated. Treat the performance figures as holdout historical diagnostics, not forecasts. Do not invest and do not open ProChart.`,
       challenge:
         `Act as a hostile investment committee reviewing portfolio ${selectedPortfolio.id}. Identify concentration, correlation, tail-risk, liquidity, regime, cost, data-quality, and construction weaknesses. Suggest deterministic checks or portfolio changes, but do not execute and do not open ProChart.`,
     };
@@ -484,14 +484,21 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
             </div>
           </div>
 
+          <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-4">
+            <p className="text-cyan-300 text-sm font-medium">Historical holdout diagnostics</p>
+            <p className="text-gray-400 text-xs mt-1">
+              Assets and weights are built from an earlier construction window. The metrics below are calculated on a later holdout window ({selectedPortfolio.metrics.evaluationWindow}). They are not forecasts and do not simulate the future stop/rebalance supervisor.
+            </p>
+          </div>
+
           <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
             {[
-              ['Return', pct(selectedPortfolio.metrics.cumulativeReturn)],
-              ['CAGR', pct(selectedPortfolio.metrics.cagr)],
-              ['Volatility', pct(selectedPortfolio.metrics.realizedVolatility)],
-              ['Max Drawdown', pct(selectedPortfolio.metrics.maxDrawdown)],
-              ['VaR 95', pct(selectedPortfolio.metrics.var95)],
-              ['CVaR 95', pct(selectedPortfolio.metrics.cvar95)],
+              ['Holdout Return', pct(selectedPortfolio.metrics.cumulativeReturn)],
+              ['Annualized CAGR*', pct(selectedPortfolio.metrics.cagr)],
+              ['Annualized Vol', pct(selectedPortfolio.metrics.realizedVolatility)],
+              ['Holdout Max DD', pct(selectedPortfolio.metrics.maxDrawdown)],
+              ['Historical VaR 95', pct(selectedPortfolio.metrics.var95)],
+              ['Historical CVaR 95', pct(selectedPortfolio.metrics.cvar95)],
               ['Sharpe', num(selectedPortfolio.metrics.sharpeRatio)],
               ['Sortino', num(selectedPortfolio.metrics.sortinoRatio)],
               ['Omega', num(selectedPortfolio.metrics.omegaRatio)],
@@ -510,11 +517,13 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
             ))}
           </div>
 
+          <p className="text-gray-600 text-[10px]">* Annualized values extrapolate a short holdout sample and can be unstable. Use them as diagnostics, not expected returns.</p>
+
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
             <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
               <div className="flex items-center gap-2 mb-4">
                 <Shield className="w-5 h-5 text-amber-400" />
-                <h4 className="text-white font-semibold">Deterministic Risk Policy</h4>
+                <h4 className="text-white font-semibold">Risk Policy & Enforcement Status</h4>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
                 {[
@@ -534,6 +543,17 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
                   </div>
                 ))}
               </div>
+              <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-lg p-3">
+                  <p className="text-emerald-300 text-xs font-medium">Enforced now in PAPER allocation</p>
+                  <p className="text-gray-400 text-[11px] mt-1">Maximum asset weight, portfolio exposure, cash reserve, and simulated fees/spread/slippage.</p>
+                </div>
+                <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
+                  <p className="text-amber-300 text-xs font-medium">Configured, not continuously automated yet</p>
+                  <p className="text-gray-400 text-[11px] mt-1">Stop-loss, take-profit, trailing stop, cooldown, scheduled rebalance, and drawdown-trigger supervision are stored with positions but do not yet fire automatically over time.</p>
+                </div>
+              </div>
+
               <div className="mt-4 pt-4 border-t border-gray-700/50 grid grid-cols-2 gap-3 text-xs">
                 <div>
                   <p className="text-gray-500">Estimated round-trip fee</p>
