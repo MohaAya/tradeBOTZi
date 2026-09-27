@@ -626,47 +626,79 @@ export function createAgentDesk(deps) {
         { role: "user", content: command }
       ];
 
-      try {
-        const started = Date.now();
-        const response = await callProvider(provider, messages);
-        const latencyMs = Date.now() - started;
-        const content = extractProviderContent(provider, response);
-        if (!response.ok || !content) {
-          const detail = response && response.data && response.data.error;
-          throw new Error(
-            (detail && (detail.message || String(detail))) ||
-            ("HTTP " + (response && response.status))
+      const candidates = provider === "freellm"
+        ? ["freellm", "ollama"]
+        : [provider, "freellm"];
+      const uniqueCandidates = candidates.filter(function (candidate, index, array) {
+        return candidate && array.indexOf(candidate) === index;
+      });
+      const attempts = [];
+
+      for (const candidate of uniqueCandidates) {
+        try {
+          const started = Date.now();
+          const response = await callProvider(candidate, messages);
+          const latencyMs = Date.now() - started;
+          const content = extractProviderContent(candidate, response);
+          if (!response.ok || !content) {
+            const detail = response && response.data && response.data.error;
+            throw new Error(
+              (detail && (detail.message || String(detail))) ||
+              ("HTTP " + (response && response.status))
+            );
+          }
+          const fallbackUsed = candidate !== provider;
+          const result = {
+            provider: candidate,
+            preferredProvider: provider,
+            fallbackUsed: fallbackUsed,
+            role: role,
+            model: providerModel(candidate),
+            content: content,
+            latencyMs: latencyMs,
+            attempts: attempts.concat([{ provider: candidate, ok: true, latencyMs: latencyMs }]),
+            ok: true
+          };
+          pushEvent(
+            "agent_complete",
+            role + " completed analysis with " + candidate + (fallbackUsed ? " (fallback from " + provider + ")" : ""),
+            {
+              jobId: jobId,
+              provider: candidate,
+              preferredProvider: provider,
+              fallbackUsed: fallbackUsed,
+              role: role,
+              latencyMs: latencyMs
+            }
           );
+          return result;
+        } catch (error) {
+          attempts.push({ provider: candidate, ok: false, error: String(error) });
+          pushEvent("agent_fallback", role + " could not use " + candidate + ": " + String(error), {
+            jobId: jobId,
+            provider: candidate,
+            preferredProvider: provider,
+            role: role
+          });
         }
-        const result = {
-          provider: provider,
-          role: role,
-          model: providerModel(provider),
-          content: content,
-          latencyMs: latencyMs,
-          ok: true
-        };
-        pushEvent("agent_complete", role + " completed analysis with " + provider, {
-          jobId: jobId,
-          provider: provider,
-          role: role,
-          latencyMs: latencyMs
-        });
-        return result;
-      } catch (error) {
-        const result = {
-          provider: provider,
-          role: role,
-          ok: false,
-          error: String(error)
-        };
-        pushEvent("agent_error", role + " failed on " + provider + ": " + String(error), {
-          jobId: jobId,
-          provider: provider,
-          role: role
-        });
-        return result;
       }
+
+      const result = {
+        provider: provider,
+        preferredProvider: provider,
+        role: role,
+        ok: false,
+        attempts: attempts,
+        error: attempts.map(function (attempt) {
+          return attempt.provider + ": " + attempt.error;
+        }).join(" | ")
+      };
+      pushEvent("agent_error", role + " exhausted its AI providers", {
+        jobId: jobId,
+        provider: provider,
+        role: role
+      });
+      return result;
     }));
 
     let paperExecution = null;
