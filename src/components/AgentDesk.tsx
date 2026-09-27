@@ -185,6 +185,7 @@ export default function AgentDesk({
       const submitted = await response.json();
       if (!response.ok || !submitted.ok) throw new Error(submitted.error || 'Could not start agent command');
       setActiveJob(submitted.jobId);
+      localStorage.setItem('tradebotzi:last-agent-job', submitted.jobId);
       const result = await pollJob(submitted.jobId);
 
       const agentMessages: AgentMessage[] = (result.results || []).map((item: any) => ({
@@ -268,7 +269,7 @@ export default function AgentDesk({
         <div>
           <h2 className="text-2xl font-bold text-white">Agent Desk</h2>
           <p className="text-gray-400 text-sm mt-1">
-            Command multiple live AIs, assign their roles, watch real activity, and execute PAPER investments.
+            Submit VPS AI jobs, inspect verifiable provider/browser/risk events, and execute deterministic PAPER simulations.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -280,7 +281,7 @@ export default function AgentDesk({
               ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
               : 'bg-gray-800 border-gray-700 text-gray-400'
           )}>
-            ProChart Browser {browserInstalled ? 'READY' : 'INSTALLING / OFFLINE'}
+            Chromium {browserInstalled ? 'INSTALLED' : 'NOT FOUND'}
           </span>
         </div>
       </div>
@@ -330,7 +331,7 @@ export default function AgentDesk({
           <div className="px-5 py-4 border-b border-gray-700 flex items-center justify-between">
             <div>
               <h3 className="text-white font-semibold">Command the AI Council</h3>
-              <p className="text-gray-500 text-xs">Selected providers receive the same command with different assigned roles.</p>
+              <p className="text-gray-500 text-xs">Commands become persisted VPS jobs. They continue if you leave this tab.</p>
             </div>
             {activeJob && (
               <div className="flex items-center gap-2 text-xs text-cyan-300">
@@ -378,7 +379,7 @@ export default function AgentDesk({
             ))}
             {running && (
               <div className="flex items-center gap-2 text-sm text-gray-400 px-3 py-2">
-                <Loader2 className="w-4 h-4 animate-spin" /> Agents are working...
+                <Loader2 className="w-4 h-4 animate-spin" /> Server job active. You can switch tabs; progress remains under Server Tasks.
               </div>
             )}
           </div>
@@ -419,13 +420,19 @@ export default function AgentDesk({
           <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
             <div className="px-4 py-3 border-b border-gray-700 flex items-center gap-2">
               <Activity className="w-4 h-4 text-violet-400" />
-              <h3 className="text-white font-semibold text-sm">Live Agent Activity</h3>
+              <h3 className="text-white font-semibold text-sm">Verified Activity Log</h3>
             </div>
             <div className="h-[330px] overflow-y-auto p-3 space-y-2">
               {events.length === 0 && (
                 <p className="text-gray-500 text-xs p-2">No agent activity yet.</p>
               )}
-              {[...events].reverse().map(event => (
+              {[...events]
+                .filter(event => [
+                  'command','provider_request','provider_response','provider_failure','provider_exhausted',
+                  'prochart','error','risk_check','risk_reject','pipeline_phase','paper_order',
+                  'paper_fill','portfolio_snapshot','paper_account','job_complete'
+                ].includes(event.type))
+                .reverse().map(event => (
                 <div key={event.id} className="bg-gray-900/60 border border-gray-800 rounded-lg p-2.5">
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <span className="text-[10px] uppercase tracking-wide text-violet-300">{event.type.replace(/_/g, ' ')}</span>
