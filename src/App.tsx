@@ -174,15 +174,129 @@ function AgentsPanel({ store }: { store: AppStore }) {
 // PORTFOLIO BUILDER
 // ============================================================
 function PortfolioBuilder({ store }: { store: AppStore }) {
-  const { markets, portfolios, providerStatuses, generateNewPortfolios, portfoliosLoading, marketsLoading, marketsError } = store;
-  const connectedProviders = providerStatuses.filter(p => p.status === 'connected');
+  const {
+    markets, portfolios, providerStatuses, generateNewPortfolios,
+    portfoliosLoading, marketsLoading, marketsError, latestRanking,
+  } = store;
+  const [selectedPortfolioId, setSelectedPortfolioId] = useState<string | null>(null);
+  const [analysisResults, setAnalysisResults] = useState<any[]>([]);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [paperStatus, setPaperStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (portfolios.length === 0) {
+      setSelectedPortfolioId(null);
+      return;
+    }
+    if (!selectedPortfolioId || !portfolios.some(p => p.id === selectedPortfolioId)) {
+      setSelectedPortfolioId(portfolios[0].id);
+    }
+  }, [portfolios, selectedPortfolioId]);
+
+  const selectedPortfolio = portfolios.find(p => p.id === selectedPortfolioId) || portfolios[0] || null;
+
+  const pct = (value: number | null | undefined, digits = 1) =>
+    value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(digits)}%`;
+  const num = (value: number | null | undefined, digits = 2) =>
+    value == null || !Number.isFinite(value) ? '—' : value.toFixed(digits);
+
+  const marketFor = (symbol: string) =>
+    [...markets]
+      .filter(m => m.canonicalSymbol === symbol && m.price !== null)
+      .sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0))[0];
+
+  const pollAgentJob = async (jobId: string) => {
+    const deadline = Date.now() + 300000;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1800));
+      const res = await fetch('/api/agents/jobs/' + encodeURIComponent(jobId), { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Portfolio intelligence job failed');
+      if (data.status === 'done') return data;
+      if (data.status === 'error') throw new Error(data.error || 'Portfolio intelligence job failed');
+    }
+    throw new Error('Portfolio intelligence timed out');
+  };
+
+  const runPortfolioCouncil = async (mode: 'full' | 'simple' | 'challenge' = 'full') => {
+    if (!selectedPortfolio || analysisLoading) return;
+    setAnalysisLoading(true);
+    setAnalysisError(null);
+    setAnalysisResults([]);
+
+    const prompts = {
+      full:
+        `Analyze portfolio ${selectedPortfolio.id} in depth. Explain its mandate, why each asset belongs, risk level, historical return, volatility, maximum drawdown, VaR, CVaR, Sharpe, Sortino, Omega, Ulcer Index, recovery factor, concentration, correlation, liquidity, estimated trading friction, current regime fit, invalidation conditions, and what should be monitored before PAPER execution. Challenge weak assumptions. Do not invest and do not open ProChart.`,
+      simple:
+        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Do not invest and do not open ProChart.`,
+      challenge:
+        `Act as a hostile investment committee reviewing portfolio ${selectedPortfolio.id}. Identify concentration, correlation, tail-risk, liquidity, regime, cost, data-quality, and construction weaknesses. Suggest deterministic checks or portfolio changes, but do not execute and do not open ProChart.`,
+    };
+
+    try {
+      const res = await fetch('/api/agents/command', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          command: prompts[mode],
+          agents: [
+            { provider: 'omniroute', role: 'Portfolio Manager' },
+            { provider: 'freellm', role: 'Quant Researcher' },
+            { provider: 'hermes', role: 'Risk & Operations Agent' },
+            { provider: 'ollama', role: 'Independent Risk Analyst' },
+          ],
+          capital: store.settings.portfolio.defaultCapital,
+          context: {
+            markets: markets.filter(m => selectedPortfolio.assets.some(a => a.canonicalSymbol === m.canonicalSymbol)).slice(0, 40),
+            portfolios: [selectedPortfolio],
+            latestRanking,
+            providerStatuses,
+          },
+        }),
+      });
+      const submitted = await res.json();
+      if (!res.ok || !submitted.ok) throw new Error(submitted.error || 'Could not start AI council');
+      const result = await pollAgentJob(submitted.jobId);
+      setAnalysisResults(result.results || []);
+    } catch (e: any) {
+      setAnalysisError(e.message || 'Portfolio intelligence failed');
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  const startPaper = async () => {
+    if (!selectedPortfolio) return;
+    setPaperStatus('Running deterministic risk checks...');
+    try {
+      const res = await fetch('/api/paper/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          portfolio: selectedPortfolio,
+          capital: store.settings.portfolio.defaultCapital,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || 'PAPER execution rejected');
+      const account = data.account;
+      setPaperStatus(
+        `PAPER active: ${account.positions.length} positions, equity $${Number(account.equity).toLocaleString(undefined, { maximumFractionDigits: 2 })}, cash $${Number(account.cash).toLocaleString(undefined, { maximumFractionDigits: 2 })}.`
+      );
+    } catch (e: any) {
+      setPaperStatus('PAPER rejected: ' + (e.message || 'unknown error'));
+    }
+  };
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h2 className="text-2xl font-bold text-white">Portfolio Builder</h2>
-          <p className="text-gray-400 text-sm mt-1">Generate portfolios from real market data</p>
+          <p className="text-gray-400 text-sm mt-1">
+            Deterministic portfolio construction, CABBAGE-inspired risk diagnostics, and a portfolio-specific AI council.
+          </p>
         </div>
         <button onClick={generateNewPortfolios} disabled={markets.length === 0 || portfoliosLoading}
           className="bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-700 disabled:text-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
@@ -195,6 +309,9 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
         <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4">
           <p className="text-emerald-400 text-sm font-medium">
             Portfolio generation complete: {portfolios.length} portfolios generated from {markets.length} live market observations.
+          </p>
+          <p className="text-emerald-300/70 text-xs mt-1">
+            Stablecoins are excluded from the investment universe. Position weights are hard-capped at 35%.
           </p>
         </div>
       )}
@@ -209,7 +326,6 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
         </div>
       )}
 
-      {/* Provider Status */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {providerStatuses.map(p => (
           <div key={p.id} className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
@@ -231,55 +347,243 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
         ))}
       </div>
 
-      {/* Pipeline */}
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Generation Pipeline</h3>
-        <div className="flex items-center justify-between text-sm">
-          <div className={`flex-1 p-3 rounded-lg border text-center ${markets.length > 0 ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-gray-900/50 border-gray-700 text-gray-500'}`}>
-            <p className="font-medium">Data Ingestion</p>
-            <p className="text-xs mt-1">{markets.length} observations</p>
-          </div>
-          <span className="mx-2 text-gray-600">→</span>
-          <div className={`flex-1 p-3 rounded-lg border text-center ${portfolios.length > 0 ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-400' : 'bg-gray-900/50 border-gray-700 text-gray-500'}`}>
-            <p className="font-medium">Portfolios</p>
-            <p className="text-xs mt-1">{portfolios.length} generated</p>
-          </div>
-          <span className="mx-2 text-gray-600">→</span>
-          <div className={`flex-1 p-3 rounded-lg border text-center ${portfolios.some(p => p.metrics) ? 'bg-violet-500/10 border-violet-500/20 text-violet-400' : 'bg-gray-900/50 border-gray-700 text-gray-500'}`}>
-            <p className="font-medium">Evaluated</p>
-            <p className="text-xs mt-1">{portfolios.filter(p => p.metrics).length} with metrics</p>
-          </div>
+        <h3 className="text-lg font-semibold text-white mb-4">Construction Pipeline</h3>
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-2 text-sm">
+          {[
+            ['Market Data', markets.length > 0, `${markets.length} observations`],
+            ['Asset Selection', portfolios.length > 0, 'momentum / liquidity / correlation / volatility'],
+            ['Position Sizing', portfolios.length > 0, 'inverse volatility + 35% cap'],
+            ['Risk Budget', portfolios.length > 0, 'exposure / reserve / exits / cooldown'],
+            ['Evaluation', portfolios.some(p => p.metrics), `${portfolios.filter(p => p.metrics).length} evaluated`],
+          ].map(([label, ready, detail]) => (
+            <div key={String(label)} className={`p-3 rounded-lg border text-center ${ready ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-300' : 'bg-gray-900/50 border-gray-700 text-gray-500'}`}>
+              <p className="font-medium">{label}</p>
+              <p className="text-[10px] mt-1 text-gray-400">{detail}</p>
+            </div>
+          ))}
         </div>
-        {portfolios.length > 0 && portfolios[0] && (
+        {portfolios.length > 0 && (
           <p className="text-amber-400 text-xs mt-3 text-center">Universe: {portfolios[0].universeLabel}</p>
         )}
       </div>
 
-      {/* Generated Portfolios */}
       {portfolios.length > 0 && (
-        <div className="space-y-3">
-          {portfolios.map(p => (
-            <div key={p.id} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="text-white font-bold text-lg">{p.id}</span>
-                  <span className="text-gray-400 ml-2">{p.name}</span>
+        <div className="grid grid-cols-1 xl:grid-cols-5 gap-3">
+          {portfolios.map(p => {
+            const m = p.metrics;
+            const active = selectedPortfolio?.id === p.id;
+            return (
+              <button key={p.id} onClick={() => {
+                setSelectedPortfolioId(p.id);
+                setAnalysisResults([]);
+                setAnalysisError(null);
+                setPaperStatus(null);
+              }}
+                className={`text-left rounded-xl border p-4 transition-all ${active ? 'bg-cyan-500/10 border-cyan-500/40' : 'bg-gray-800/50 border-gray-700 hover:border-gray-600'}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-white font-bold">{p.id}</p>
+                    <p className="text-gray-300 text-sm font-medium mt-0.5">{p.name}</p>
+                  </div>
+                  <span className={`text-[10px] px-2 py-1 rounded-full ${
+                    p.riskPolicy.riskBand === 'LOW' ? 'bg-emerald-500/15 text-emerald-300' :
+                    p.riskPolicy.riskBand === 'MODERATE' ? 'bg-cyan-500/15 text-cyan-300' :
+                    p.riskPolicy.riskBand === 'HIGH' ? 'bg-amber-500/15 text-amber-300' :
+                    'bg-red-500/15 text-red-300'
+                  }`}>{p.riskPolicy.riskScore}/10</span>
                 </div>
-                <span className={`text-xs px-2 py-1 rounded-full ${
-                  p.status === 'paper_active' ? 'bg-emerald-500/20 text-emerald-400' :
-                  p.status === 'disqualified' ? 'bg-red-500/20 text-red-400' :
-                  'bg-gray-700 text-gray-300'
-                }`}>{p.status.replace('_', ' ')}</span>
-              </div>
-              <div className="flex gap-2 mt-2 flex-wrap">
-                {p.assets.map(a => (
-                  <span key={a.canonicalSymbol} className="text-xs bg-gray-700/50 text-gray-300 px-2 py-1 rounded">
-                    {a.canonicalSymbol} {(a.allocationPercent).toFixed(1)}%
+                <p className="text-gray-500 text-[11px] mt-2 line-clamp-2">{p.mandate}</p>
+                <div className="grid grid-cols-2 gap-2 mt-3 text-xs">
+                  <div><p className="text-gray-500">Return</p><p className="text-white">{pct(m?.cumulativeReturn)}</p></div>
+                  <div><p className="text-gray-500">Max DD</p><p className="text-white">{pct(m?.maxDrawdown)}</p></div>
+                  <div><p className="text-gray-500">Sharpe</p><p className="text-white">{num(m?.sharpeRatio)}</p></div>
+                  <div><p className="text-gray-500">CVaR 95</p><p className="text-white">{pct(m?.cvar95)}</p></div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {selectedPortfolio && selectedPortfolio.metrics && (
+        <div className="space-y-5">
+          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-6">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div className="flex items-center gap-3 flex-wrap">
+                  <h3 className="text-xl font-bold text-white">{selectedPortfolio.id} · {selectedPortfolio.name}</h3>
+                  <span className={`text-xs px-2.5 py-1 rounded-full ${
+                    selectedPortfolio.executionReady ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+                  }`}>
+                    {selectedPortfolio.executionReady ? 'PAPER READY' : 'REVIEW REQUIRED'}
                   </span>
+                </div>
+                <p className="text-gray-300 text-sm mt-2">{selectedPortfolio.description}</p>
+                <p className="text-gray-500 text-xs mt-2">{selectedPortfolio.mandate}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-gray-500 text-xs">Risk score</p>
+                <p className="text-white text-2xl font-bold">{selectedPortfolio.riskPolicy.riskScore}<span className="text-gray-500 text-sm"> / 10</span></p>
+                <p className="text-gray-400 text-xs">{selectedPortfolio.riskPolicy.riskBand} · {selectedPortfolio.holdingPeriod}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-8 gap-3">
+            {[
+              ['Return', pct(selectedPortfolio.metrics.cumulativeReturn)],
+              ['CAGR', pct(selectedPortfolio.metrics.cagr)],
+              ['Volatility', pct(selectedPortfolio.metrics.realizedVolatility)],
+              ['Max Drawdown', pct(selectedPortfolio.metrics.maxDrawdown)],
+              ['VaR 95', pct(selectedPortfolio.metrics.var95)],
+              ['CVaR 95', pct(selectedPortfolio.metrics.cvar95)],
+              ['Sharpe', num(selectedPortfolio.metrics.sharpeRatio)],
+              ['Sortino', num(selectedPortfolio.metrics.sortinoRatio)],
+              ['Omega', num(selectedPortfolio.metrics.omegaRatio)],
+              ['Ulcer', pct(selectedPortfolio.metrics.ulcerIndex)],
+              ['Recovery', num(selectedPortfolio.metrics.recoveryFactor)],
+              ['Correlation', num(selectedPortfolio.metrics.avgPairwiseCorrelation)],
+              ['Effective Positions', num(selectedPortfolio.metrics.effectivePositions, 1)],
+              ['Positive Days', pct(selectedPortfolio.metrics.positiveDayRate)],
+              ['Best Day', pct(selectedPortfolio.metrics.bestDay)],
+              ['Worst Day', pct(selectedPortfolio.metrics.worstDay)],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="bg-gray-900/60 border border-gray-800 rounded-lg p-3">
+                <p className="text-gray-500 text-[10px]">{label}</p>
+                <p className="text-white font-semibold text-sm mt-1">{value}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+            <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Shield className="w-5 h-5 text-amber-400" />
+                <h4 className="text-white font-semibold">Deterministic Risk Policy</h4>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-sm">
+                {[
+                  ['Max portfolio exposure', pct(selectedPortfolio.riskPolicy.maxPortfolioExposure, 0)],
+                  ['Cash reserve', pct(selectedPortfolio.riskPolicy.cashReserve, 0)],
+                  ['Max single asset', pct(selectedPortfolio.riskPolicy.maxSingleAssetWeight, 0)],
+                  ['Stop loss', `${selectedPortfolio.riskPolicy.stopLossPercent}%`],
+                  ['Take profit', `${selectedPortfolio.riskPolicy.takeProfitPercent}%`],
+                  ['Trailing stop', `${selectedPortfolio.riskPolicy.trailingStopPercent}%`],
+                  ['Rebalance', `${selectedPortfolio.riskPolicy.rebalanceDays} days`],
+                  ['Cooldown', `${selectedPortfolio.riskPolicy.cooldownHours} hours`],
+                  ['Monitoring DD limit', pct(-selectedPortfolio.riskPolicy.maxDrawdownLimit, 0)],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="bg-gray-900/50 rounded-lg p-3">
+                    <p className="text-gray-500 text-[10px]">{label}</p>
+                    <p className="text-white font-medium mt-1">{value}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 pt-4 border-t border-gray-700/50 grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <p className="text-gray-500">Estimated round-trip fee</p>
+                  <p className="text-white">{pct(selectedPortfolio.metrics.estimatedFees, 2)}</p>
+                </div>
+                <div>
+                  <p className="text-gray-500">Weighted spread estimate</p>
+                  <p className="text-white">{pct(selectedPortfolio.metrics.estimatedSpreadCost, 3)}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
+              <div className="px-5 py-4 border-b border-gray-700">
+                <h4 className="text-white font-semibold">Holdings and Live Context</h4>
+                <p className="text-gray-500 text-xs mt-1">Allocation, live price, 24h move, and market liquidity.</p>
+              </div>
+              <div className="divide-y divide-gray-800">
+                {selectedPortfolio.assets.map(asset => {
+                  const market = marketFor(asset.canonicalSymbol);
+                  return (
+                    <div key={asset.canonicalSymbol} className="grid grid-cols-5 gap-2 px-5 py-3 text-xs items-center">
+                      <div>
+                        <p className="text-white font-semibold">{asset.canonicalSymbol}</p>
+                        <p className="text-gray-600">{asset.provider}</p>
+                      </div>
+                      <div><p className="text-gray-500">Weight</p><p className="text-white">{asset.allocationPercent.toFixed(1)}%</p></div>
+                      <div><p className="text-gray-500">Price</p><p className="text-white">{market?.price != null ? '$' + market.price.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}</p></div>
+                      <div><p className="text-gray-500">24h</p><p className={market?.change24h != null && market.change24h >= 0 ? 'text-emerald-400' : 'text-red-400'}>{market?.change24h != null ? market.change24h.toFixed(2) + '%' : '—'}</p></div>
+                      <div><p className="text-gray-500">24h Volume</p><p className="text-white">{market?.volume24h ? '$' + (market.volume24h / 1e6).toFixed(0) + 'M' : '—'}</p></div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gradient-to-br from-violet-500/10 to-cyan-500/5 border border-violet-500/20 rounded-xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-violet-500/20 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-3">
+                <Brain className="w-5 h-5 text-violet-300" />
+                <div>
+                  <h4 className="text-white font-semibold">Portfolio Intelligence Council</h4>
+                  <p className="text-gray-400 text-xs">Multiple available AIs receive the same calculated portfolio state with different roles.</p>
+                </div>
+              </div>
+              {analysisLoading && <div className="flex items-center gap-2 text-xs text-violet-300"><Loader2 className="w-4 h-4 animate-spin" /> Council working...</div>}
+            </div>
+
+            <div className="p-5">
+              <div className="flex gap-2 flex-wrap mb-4">
+                <button onClick={() => runPortfolioCouncil('full')} disabled={analysisLoading}
+                  className="px-3 py-2 rounded-lg bg-violet-500/15 border border-violet-500/20 text-violet-200 text-xs hover:bg-violet-500/25 disabled:opacity-40">
+                  Full AI Council Analysis
+                </button>
+                <button onClick={() => runPortfolioCouncil('simple')} disabled={analysisLoading}
+                  className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-gray-300 text-xs hover:text-white disabled:opacity-40">
+                  Explain Simply
+                </button>
+                <button onClick={() => runPortfolioCouncil('challenge')} disabled={analysisLoading}
+                  className="px-3 py-2 rounded-lg bg-gray-900 border border-gray-700 text-gray-300 text-xs hover:text-white disabled:opacity-40">
+                  Challenge Risks
+                </button>
+                <button onClick={startPaper} disabled={!selectedPortfolio.executionReady || analysisLoading}
+                  className="px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 disabled:bg-gray-800 disabled:text-gray-600 text-white text-xs font-medium">
+                  Start PAPER Allocation
+                </button>
+              </div>
+
+              {paperStatus && (
+                <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3 text-xs text-emerald-300">
+                  {paperStatus}
+                </div>
+              )}
+
+              {analysisError && (
+                <div className="mb-4 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-xs text-red-300">{analysisError}</div>
+              )}
+
+              {analysisResults.length === 0 && !analysisLoading && !analysisError && (
+                <div className="bg-gray-950/40 border border-gray-800 rounded-lg p-5 text-center">
+                  <p className="text-gray-300 text-sm">Select an AI council action to interrogate this portfolio.</p>
+                  <p className="text-gray-600 text-xs mt-1">AI interpretation cannot change weights or bypass the deterministic risk engine.</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {analysisResults.map((result, index) => (
+                  <div key={index} className={`rounded-lg border p-4 ${result.ok ? 'bg-gray-950/50 border-gray-800' : 'bg-red-500/5 border-red-500/20'}`}>
+                    <div className="flex items-center justify-between gap-2 mb-2">
+                      <div>
+                        <p className="text-white text-sm font-medium">{result.role || 'Agent'}</p>
+                        <p className="text-gray-600 text-[10px]">{result.provider} · {result.model || 'provider model'}{result.latencyMs ? ` · ${result.latencyMs} ms` : ''}</p>
+                      </div>
+                      <span className={`text-[10px] ${result.ok ? 'text-emerald-400' : 'text-red-400'}`}>{result.ok ? 'COMPLETE' : 'FAILED'}</span>
+                    </div>
+                    <p className="text-gray-300 text-xs whitespace-pre-wrap leading-relaxed">
+                      {result.ok ? result.content : (result.error || 'Provider failed')}
+                    </p>
+                  </div>
                 ))}
               </div>
             </div>
-          ))}
+          </div>
         </div>
       )}
 
