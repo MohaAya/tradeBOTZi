@@ -650,6 +650,9 @@ export function createAgentDesk(deps) {
             "Use only the supplied application state for concrete portfolio and market facts. State uncertainties clearly. Be concise and specific.\n" +
             "Never invent ProChart/backtest metrics. Only report a metric if it appears explicitly in the supplied proChart.observedText. If a backtest is still running or no completed metrics are present, say DATA UNAVAILABLE or PENDING.\n" +
             "Portfolio riskPolicy fields and calculated metrics are deterministic. Interpret them, but never override or invent them.\n" +
+            "Execution truth: the current PAPER engine enforces maximum asset weight, maximum portfolio exposure, cash reserve, and simulated costs when the initial allocation is created. Stop-loss, take-profit, trailing-stop, cooldown, rebalance interval, and maximum-drawdown rules are currently stored policy parameters and position thresholds only; there is not yet a continuous supervisor that automatically fires them. Never claim those rules are already running automatically.\n" +
+            "Performance truth: portfolio selection and sizing use an earlier construction window, while reported performance/risk metrics use a later holdout window. These are historical holdout diagnostics, not a guarantee, forecast, or full walk-forward execution backtest.\n" +
+            "Recovery Factor is total return divided by absolute maximum drawdown; higher values indicate stronger recovery efficiency. Do not reverse that interpretation.\n" +
             "AI analysis is advisory only. PAPER execution decisions are made by the deterministic risk engine after all agent responses.\n" +
             "Current application state:\n" + contextText
         },
