@@ -185,6 +185,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [activeAnalysisJob, setActiveAnalysisJob] = useState<string | null>(null);
   const [paperStatus, setPaperStatus] = useState<string | null>(null);
+  const [supervisor, setSupervisor] = useState<any>(null);
 
   useEffect(() => {
     if (portfolios.length === 0) {
@@ -197,6 +198,23 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
   }, [portfolios, selectedPortfolioId]);
 
   const selectedPortfolio = portfolios.find(p => p.id === selectedPortfolioId) || portfolios[0] || null;
+  useEffect(() => {
+    let cancelled = false;
+    const refreshSupervisor = async () => {
+      try {
+        const res = await fetch('/api/paper/supervisor', { cache: 'no-store' });
+        const data = await res.json();
+        if (!cancelled && res.ok && data.ok) setSupervisor(data.supervisor);
+      } catch {}
+    };
+    refreshSupervisor();
+    const timer = setInterval(refreshSupervisor, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
 
   const pct = (value: number | null | undefined, digits = 1) =>
     value == null || !Number.isFinite(value) ? '—' : `${(value * 100).toFixed(digits)}%`;
@@ -273,7 +291,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
       full:
         `Analyze portfolio ${selectedPortfolio.id} in depth. Explain its mandate, why each asset belongs, risk level, historical return, volatility, maximum drawdown, VaR, CVaR, Sharpe, Sortino, Omega, Ulcer Index, recovery factor, concentration, correlation, liquidity, estimated trading friction, current regime fit, invalidation conditions, and what should be monitored before PAPER execution. Challenge weak assumptions. Do not invest and do not open ProChart.`,
       simple:
-        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Clearly distinguish controls enforced at initial PAPER allocation from policy rules that are merely stored and are not yet continuously automated. Treat the performance figures as holdout historical diagnostics, not forecasts. Do not invest and do not open ProChart.`,
+        `Explain portfolio ${selectedPortfolio.id} in plain English for a non-specialist. Explain what it owns, why, what can go wrong, how risky it is, and what its risk rules mean. Use the supplied calculated metrics only. Clearly distinguish initial allocation controls from continuous PAPER Portfolio Supervisor behavior. The supervisor is active on the VPS and may execute simulated stops, take-profits, trailing stops, cooldown-aware rebalancing, and portfolio drawdown risk-off actions. Treat the performance figures as holdout historical diagnostics, not forecasts. Do not invest and do not open ProChart.`,
       challenge:
         `Act as a hostile investment committee reviewing portfolio ${selectedPortfolio.id}. Identify concentration, correlation, tail-risk, liquidity, regime, cost, data-quality, and construction weaknesses. Suggest deterministic checks or portfolio changes, but do not execute and do not open ProChart.`,
     };
@@ -548,9 +566,16 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
                   <p className="text-emerald-300 text-xs font-medium">Enforced now in PAPER allocation</p>
                   <p className="text-gray-400 text-[11px] mt-1">Maximum asset weight, portfolio exposure, cash reserve, and simulated fees/spread/slippage.</p>
                 </div>
-                <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3">
-                  <p className="text-amber-300 text-xs font-medium">Configured, not continuously automated yet</p>
-                  <p className="text-gray-400 text-[11px] mt-1">Stop-loss, take-profit, trailing stop, cooldown, scheduled rebalance, and drawdown-trigger supervision are stored with positions but do not yet fire automatically over time.</p>
+                <div className={`border rounded-lg p-3 ${supervisor?.enabled ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-red-500/5 border-red-500/20'}`}>
+                  <p className={`text-xs font-medium ${supervisor?.enabled ? 'text-emerald-300' : 'text-red-300'}`}>
+                    Continuous PAPER supervisor {supervisor?.enabled ? 'ACTIVE' : 'OFFLINE'}
+                  </p>
+                  <p className="text-gray-400 text-[11px] mt-1">
+                    Stop-loss, take-profit, trailing stop, cooldown-aware scheduled rebalance, mark-to-market, and portfolio drawdown risk-off checks run on the VPS every {supervisor?.intervalMs ? Math.round(supervisor.intervalMs / 1000) : '—'} seconds.
+                  </p>
+                  <p className="text-gray-600 text-[10px] mt-1">
+                    Last successful cycle: {supervisor?.lastSuccessAt ? new Date(supervisor.lastSuccessAt).toLocaleTimeString() : '—'}
+                  </p>
                 </div>
               </div>
 
