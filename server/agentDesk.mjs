@@ -113,6 +113,113 @@ export function createAgentDesk(deps) {
     return event;
   }
 
+  function finiteNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function fmtNumber(value, digits) {
+    const n = finiteNumber(value);
+    return n === null ? null : Number(n.toFixed(digits == null ? 2 : digits));
+  }
+
+  function fmtPercent(value, digits) {
+    const n = finiteNumber(value);
+    return n === null ? null : (n * 100).toFixed(digits == null ? 2 : digits) + "%";
+  }
+
+  function portfolioFacts(portfolio) {
+    const metrics = portfolio && portfolio.metrics ? portfolio.metrics : {};
+    const policy = portfolio && portfolio.riskPolicy ? portfolio.riskPolicy : {};
+    return {
+      id: portfolio && portfolio.id,
+      name: portfolio && portfolio.name,
+      description: portfolio && portfolio.description,
+      mandate: portfolio && portfolio.mandate,
+      holdingPeriod: portfolio && portfolio.holdingPeriod,
+      universeLabel: portfolio && portfolio.universeLabel,
+      executionReady: portfolio && portfolio.executionReady,
+      generator: portfolio && portfolio.generatorParams,
+      holdings: Array.isArray(portfolio && portfolio.assets) ? portfolio.assets.map(function (asset) {
+        return {
+          symbol: asset.canonicalSymbol,
+          provider: asset.provider,
+          marketType: asset.marketType,
+          weight: fmtPercent(asset.weight, 2)
+        };
+      }) : [],
+      metrics: {
+        evaluationWindow: metrics.evaluationWindow || null,
+        cumulativeReturn: fmtPercent(metrics.cumulativeReturn, 2),
+        annualizedReturn: fmtPercent(metrics.annualizedReturn, 2),
+        cagr: fmtPercent(metrics.cagr, 2),
+        realizedVolatility: fmtPercent(metrics.realizedVolatility, 2),
+        downsideVolatility: fmtPercent(metrics.downsideVolatility, 2),
+        maxDrawdown: fmtPercent(metrics.maxDrawdown, 2),
+        currentDrawdown: fmtPercent(metrics.currentDrawdown, 2),
+        var95: fmtPercent(metrics.var95, 2),
+        cvar95: fmtPercent(metrics.cvar95, 2),
+        sharpeRatio: fmtNumber(metrics.sharpeRatio, 2),
+        sortinoRatio: fmtNumber(metrics.sortinoRatio, 2),
+        calmarRatio: fmtNumber(metrics.calmarRatio, 2),
+        omegaRatio: fmtNumber(metrics.omegaRatio, 2),
+        ulcerIndex: fmtPercent(metrics.ulcerIndex, 2),
+        recoveryFactor: fmtNumber(metrics.recoveryFactor, 2),
+        positiveDayRate: fmtPercent(metrics.positiveDayRate, 1),
+        bestDay: fmtPercent(metrics.bestDay, 2),
+        worstDay: fmtPercent(metrics.worstDay, 2),
+        avgPairwiseCorrelation: fmtNumber(metrics.avgPairwiseCorrelation, 3),
+        effectivePositions: fmtNumber(metrics.effectivePositions, 2),
+        estimatedSpreadCost: fmtPercent(metrics.estimatedSpreadCost, 3),
+        estimatedFees: fmtPercent(metrics.estimatedFees, 2),
+        liquidityScore: fmtNumber(metrics.liquidityScore, 2),
+        momentumScore: fmtNumber(metrics.momentumScore, 2),
+        volatilityRegime: metrics.volatilityRegime || null,
+        trendRegime: metrics.trendRegime || null,
+        observationCount: finiteNumber(metrics.observationCount),
+        dataFreshness: metrics.dataFreshness || null
+      },
+      riskPolicy: {
+        riskScore: fmtNumber(policy.riskScore, 1),
+        riskBand: policy.riskBand || null,
+        maxSingleAssetWeight: fmtPercent(policy.maxSingleAssetWeight, 0),
+        maxPortfolioExposure: fmtPercent(policy.maxPortfolioExposure, 0),
+        cashReserve: fmtPercent(policy.cashReserve, 0),
+        stopLoss: finiteNumber(policy.stopLossPercent) === null ? null : Number(policy.stopLossPercent).toFixed(1) + "%",
+        takeProfit: finiteNumber(policy.takeProfitPercent) === null ? null : Number(policy.takeProfitPercent).toFixed(1) + "%",
+        trailingStop: finiteNumber(policy.trailingStopPercent) === null ? null : Number(policy.trailingStopPercent).toFixed(1) + "%",
+        rebalanceDays: finiteNumber(policy.rebalanceDays),
+        cooldownHours: finiteNumber(policy.cooldownHours),
+        maxDrawdownLimit: fmtPercent(policy.maxDrawdownLimit, 0)
+      },
+      executionStatus: {
+        mode: "PAPER_ONLY",
+        enforcedAtInitialAllocation: [
+          "maximum single-asset weight",
+          "maximum portfolio exposure",
+          "cash reserve",
+          "simulated fees/spread/slippage"
+        ],
+        storedButNotContinuouslyAutomated: [
+          "stop-loss",
+          "take-profit",
+          "trailing stop",
+          "cooldown",
+          "scheduled rebalance",
+          "maximum-drawdown trigger"
+        ],
+        continuousSupervisorActive: false
+      },
+      performanceStatus: {
+        type: "historical_holdout_diagnostic",
+        forecast: false,
+        liveTrackRecord: false,
+        fullExecutionBacktest: false,
+        note: "Selection and sizing use an earlier construction window; metrics use a later holdout window."
+      }
+    };
+  }
+
   function defaultAssignments() {
     return [
       { provider: "omniroute", role: "Portfolio Manager" },
@@ -631,7 +738,7 @@ export function createAgentDesk(deps) {
 
     const contextText = JSON.stringify({
       mode: "PAPER_ONLY",
-      portfolios: context.portfolios || [],
+      portfolios: (context.portfolios || []).map(portfolioFacts),
       latestRanking: context.latestRanking || null,
       providerStatuses: context.providerStatuses || [],
       markets: (context.markets || []).slice(0, 40),
@@ -651,8 +758,10 @@ export function createAgentDesk(deps) {
             "Never invent ProChart/backtest metrics. Only report a metric if it appears explicitly in the supplied proChart.observedText. If a backtest is still running or no completed metrics are present, say DATA UNAVAILABLE or PENDING.\n" +
             "Portfolio riskPolicy fields and calculated metrics are deterministic. Interpret them, but never override or invent them.\n" +
             "Execution truth: the current PAPER engine enforces maximum asset weight, maximum portfolio exposure, cash reserve, and simulated costs when the initial allocation is created. Stop-loss, take-profit, trailing-stop, cooldown, rebalance interval, and maximum-drawdown rules are currently stored policy parameters and position thresholds only; there is not yet a continuous supervisor that automatically fires them. Never claim those rules are already running automatically.\n" +
-            "Performance truth: portfolio selection and sizing use an earlier construction window, while reported performance/risk metrics use a later holdout window. These are historical holdout diagnostics, not a guarantee, forecast, or full walk-forward execution backtest.\n" +
+            "Performance truth: portfolio selection and sizing use an earlier construction window, while reported performance/risk metrics use a later holdout window. These are historical holdout diagnostics, not a guarantee, forecast, live track record, or full walk-forward execution backtest.\n" +
+            "The portfolio facts supplied below already format percentages with explicit percent signs. Use those strings exactly. Do not reconvert, reannualize, or reinterpret their units.\n" +
             "Recovery Factor is total return divided by absolute maximum drawdown; higher values indicate stronger recovery efficiency. Do not reverse that interpretation.\n" +
+            "Do not describe holdout diagnostics as profits the bot 'delivered' or 'earned'. Say the portfolio 'showed' or 'would have shown' those historical diagnostic values.\n" +
             "AI analysis is advisory only. PAPER execution decisions are made by the deterministic risk engine after all agent responses.\n" +
             "Current application state:\n" + contextText
         },
