@@ -84,8 +84,12 @@ export function createAgentDesk(deps) {
   supervisorState.running = false;
 
   function publicSupervisorState() {
+    const persistedSupervisorOrders = (paperState.orders || []).filter(function (order) {
+      return order && order.supervisor === true && !String(order.portfolioId || "").startsWith("TEST-SUP");
+    }).length;
     return Object.assign({}, supervisorState, {
       running: supervisorBusy,
+      totalActions: persistedSupervisorOrders,
       accountCount: Object.values(paperState.accounts || {}).filter(function (account) {
         return account && account.status === "active";
       }).length
