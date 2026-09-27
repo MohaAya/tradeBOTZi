@@ -284,12 +284,19 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           command: prompts[mode],
-          agents: [
-            { provider: 'omniroute', role: 'Portfolio Manager' },
-            { provider: 'freellm', role: 'Quant Researcher' },
-            { provider: 'hermes', role: 'Risk & Operations Agent' },
-            { provider: 'ollama', role: 'Independent Risk Analyst' },
-          ],
+          agents: mode === 'simple'
+            ? [{ provider: 'freellm', role: 'Portfolio Explainer' }]
+            : mode === 'challenge'
+            ? [
+                { provider: 'omniroute', role: 'Risk Challenger' },
+                { provider: 'freellm', role: 'Quant Challenger' },
+              ]
+            : [
+                { provider: 'omniroute', role: 'Portfolio Manager' },
+                { provider: 'freellm', role: 'Quant Researcher' },
+                { provider: 'hermes', role: 'Risk & Operations Agent' },
+                { provider: 'ollama', role: 'Independent Risk Analyst' },
+              ],
           capital: store.settings.portfolio.defaultCapital,
           context: {
             markets: markets.filter(m => selectedPortfolio.assets.some(a => a.canonicalSymbol === m.canonicalSymbol)).slice(0, 40),
