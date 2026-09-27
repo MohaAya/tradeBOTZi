@@ -263,7 +263,7 @@ export function useAppStore(): AppStore {
         timestamp: now + index * assumptions.fillDelayMs,
         canonicalSymbol: asset.canonicalSymbol,
         provider: asset.provider,
-        side: 'BUY' as const,
+        side: 'buy' as const,
         quantity,
         price: fillPrice,
         fees: fee,
