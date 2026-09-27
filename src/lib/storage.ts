@@ -88,7 +88,8 @@ export function loadPortfolios(): Portfolio[] {
       p.metrics &&
       typeof p.metrics.omegaRatio !== 'undefined' &&
       typeof p.metrics.ulcerIndex !== 'undefined' &&
-      typeof p.metrics.recoveryFactor !== 'undefined'
+      typeof p.metrics.recoveryFactor !== 'undefined' &&
+      p.generatorParams?.evaluationMode === 'holdout'
     )
   );
 }
