@@ -471,6 +471,10 @@ export default function AgentDesk({
               <div><span className="text-gray-500">Last success</span><p className="text-gray-200">{supervisor?.lastSuccessAt ? new Date(supervisor.lastSuccessAt).toLocaleTimeString() : '—'}</p></div>
               <div><span className="text-gray-500">Total actions</span><p className="text-gray-200">{supervisor?.totalActions ?? 0}</p></div>
             </div>
+            <div className="mt-3 bg-gray-950/50 border border-gray-800 rounded-lg p-2">
+              <p className="text-gray-600 text-[10px]">Last governed cycle</p>
+              <p className="text-gray-300 text-[10px] font-mono break-all">{supervisor?.lastCycleId || '—'}</p>
+            </div>
             <p className="text-gray-500 text-[10px] mt-3">
               Marks positions to market and can execute simulated stop-loss, take-profit, trailing-stop, drawdown risk-off, cooldown and scheduled rebalance actions.
             </p>
