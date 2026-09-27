@@ -14,15 +14,55 @@ export function createAgentDesk(deps) {
 
   const paperFile = process.env.PAPER_STATE_FILE || "/opt/tradebotzi/data/paper-state.json";
   fs.mkdirSync("/opt/tradebotzi/data", { recursive: true });
-  let paperState = { accounts: {}, transactions: [] };
+  let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [] };
   try {
-    paperState = JSON.parse(fs.readFileSync(paperFile, "utf8"));
+    const loaded = JSON.parse(fs.readFileSync(paperFile, "utf8"));
+    paperState = {
+      accounts: loaded.accounts || {},
+      transactions: Array.isArray(loaded.transactions) ? loaded.transactions : [],
+      orders: Array.isArray(loaded.orders) ? loaded.orders : [],
+      snapshots: Array.isArray(loaded.snapshots) ? loaded.snapshots : []
+    };
   } catch {}
 
   function savePaperState() {
     const temp = paperFile + ".tmp";
     fs.writeFileSync(temp, JSON.stringify(paperState, null, 2));
     fs.renameSync(temp, paperFile);
+  }
+
+  function appendPortfolioSnapshot(account, reason) {
+    const positions = Array.isArray(account.positions) ? account.positions : [];
+    const grossExposure = positions.reduce(function (sum, position) {
+      return sum + Math.abs(Number(position.marketValue) || 0);
+    }, 0);
+    const snapshot = {
+      id: "psnap-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+      portfolioId: account.portfolioId,
+      createdAt: Date.now(),
+      reason: reason || "update",
+      totalValue: Number(account.equity) || 0,
+      unallocated: Number(account.cash) || 0,
+      pendingValue: 0,
+      totalNetGain: (Number(account.equity) || 0) - (Number(account.initialCapital) || 0),
+      totalCost: Number(account.totalFees) || 0,
+      grossExposure: grossExposure,
+      netExposure: grossExposure,
+      positions: positions.map(function (position) {
+        return {
+          canonicalSymbol: position.canonicalSymbol,
+          marketValue: position.marketValue,
+          quantity: position.quantity,
+          averageCost: position.averageCost,
+          currentPrice: position.currentPrice,
+          unrealizedPnl: position.unrealizedPnl,
+          targetWeight: position.targetWeight,
+          portfolioWeight: position.portfolioWeight
+        };
+      })
+    };
+    paperState.snapshots = paperState.snapshots.concat([snapshot]).slice(-3000);
+    return snapshot;
   }
 
   function pushEvent(type, message, extra) {
@@ -295,6 +335,23 @@ export function createAgentDesk(deps) {
     if (!portfolio || !portfolio.id || !Array.isArray(portfolio.assets) || portfolio.assets.length < 2) {
       throw new Error("A valid portfolio with at least two assets is required for PAPER execution");
     }
+    if (portfolio.executionReady === false) {
+      throw new Error("Risk engine rejected portfolio: portfolio is marked REVIEW REQUIRED");
+    }
+
+    const riskPolicy = portfolio.riskPolicy || {
+      maxSingleAssetWeight: 0.35,
+      maxPortfolioExposure: 0.95,
+      cashReserve: 0.05,
+      stopLossPercent: 10,
+      takeProfitPercent: 20,
+      trailingStopPercent: 8,
+      rebalanceDays: 7,
+      cooldownHours: 24,
+      maxDrawdownLimit: 0.35,
+      riskScore: 5,
+      riskBand: "MODERATE"
+    };
 
     const weights = portfolio.assets.map(function (asset) {
       const direct = Number(asset.weight);
@@ -303,9 +360,16 @@ export function createAgentDesk(deps) {
     if (weights.some(function (weight) { return !Number.isFinite(weight) || weight <= 0; })) {
       throw new Error("Portfolio contains invalid asset weights");
     }
-    if (weights.some(function (weight) { return weight > 0.350001; })) {
-      throw new Error("Risk engine rejected portfolio: an asset weight exceeds the 35% hard limit");
+
+    const maxSingleAssetWeight = Math.min(0.35, Math.max(0.05, Number(riskPolicy.maxSingleAssetWeight) || 0.35));
+    if (weights.some(function (weight) { return weight > maxSingleAssetWeight + 0.000001; })) {
+      throw new Error("Risk engine rejected portfolio: an asset weight exceeds the policy single-asset limit");
     }
+
+    pushEvent("pipeline_phase", "Position sizing validated for " + portfolio.id, {
+      portfolioId: portfolio.id,
+      phase: "position_sizing"
+    });
 
     const snapshot = await serverMarketSnapshot();
     const prices = new Map();
@@ -323,9 +387,24 @@ export function createAgentDesk(deps) {
       fillDelayMs: 100
     };
     const initialCapital = Math.max(100, Number(capital) || 100000);
-    const reserve = initialCapital * 0.05;
-    const investable = initialCapital - reserve;
+    const maxExposure = Math.max(0.25, Math.min(0.98, Number(riskPolicy.maxPortfolioExposure) || 0.95));
+    const minimumReserve = Math.max(0, Math.min(0.75, Number(riskPolicy.cashReserve) || 0.05));
+    const investableFraction = Math.min(maxExposure, 1 - minimumReserve);
+    const reserve = initialCapital * (1 - investableFraction);
+    const investable = initialCapital * investableFraction;
     const totalWeight = weights.reduce(function (sum, weight) { return sum + weight; }, 0);
+
+    pushEvent("pipeline_phase", "Portfolio exposure budget applied: " + (investableFraction * 100).toFixed(0) + "% invested, " + ((1 - investableFraction) * 100).toFixed(0) + "% reserve", {
+      portfolioId: portfolio.id,
+      phase: "risk_budget",
+      maxExposure: maxExposure,
+      cashReserve: 1 - investableFraction
+    });
+    pushEvent("pipeline_phase", "Execution cost model applied before PAPER orders", {
+      portfolioId: portfolio.id,
+      phase: "execution_costs",
+      assumptions: assumptions
+    });
     const positions = [];
     const transactions = [];
     let spent = 0;
@@ -346,7 +425,13 @@ export function createAgentDesk(deps) {
       const normalizedWeight = weights[index] / totalWeight;
       const targetSpend = investable * normalizedWeight;
       const feeRate = assumptions.feesPercent / 100;
-      const spreadRate = assumptions.spreadPercent / 100;
+      const observedSpreadPercent = market && market.spread && market.price
+        ? Math.max(0, (Number(market.spread) / Number(market.price)) * 100)
+        : 0;
+      const effectiveSpreadPercent = observedSpreadPercent > 0
+        ? observedSpreadPercent
+        : assumptions.spreadPercent;
+      const spreadRate = effectiveSpreadPercent / 100;
       const slippageRate = assumptions.slippagePercent / 100;
       const fillPrice = marketPrice * (1 + spreadRate / 2 + slippageRate);
       const notional = targetSpend / (1 + feeRate);
@@ -357,6 +442,9 @@ export function createAgentDesk(deps) {
       spent += total;
       totalFees += fees;
 
+      const stopLossPrice = fillPrice * (1 - Math.max(0, Number(riskPolicy.stopLossPercent) || 0) / 100);
+      const takeProfitPrice = fillPrice * (1 + Math.max(0, Number(riskPolicy.takeProfitPercent) || 0) / 100);
+
       positions.push({
         canonicalSymbol: asset.canonicalSymbol,
         provider: market.provider,
@@ -364,7 +452,37 @@ export function createAgentDesk(deps) {
         averageCost: fillPrice,
         currentPrice: marketPrice,
         marketValue: marketValue,
-        unrealizedPnl: marketValue - notional
+        unrealizedPnl: marketValue - notional,
+        targetWeight: normalizedWeight,
+        portfolioWeight: (targetSpend / initialCapital),
+        stopLossPrice: stopLossPrice,
+        takeProfitPrice: takeProfitPrice,
+        trailingStopPercent: Number(riskPolicy.trailingStopPercent) || 0,
+        cooldownHours: Number(riskPolicy.cooldownHours) || 0
+      });
+
+      const order = {
+        id: "pord-" + Date.now() + "-" + index + "-" + Math.random().toString(36).slice(2, 7),
+        portfolioId: portfolio.id,
+        canonicalSymbol: asset.canonicalSymbol,
+        provider: market.provider,
+        type: "MARKET",
+        side: "buy",
+        status: "FILLED",
+        requestedNotional: targetSpend,
+        filledNotional: notional,
+        quantity: quantity,
+        submittedAt: Date.now(),
+        filledAt: Date.now(),
+        fillPrice: fillPrice,
+        simulated: true
+      };
+      paperState.orders = paperState.orders.concat([order]).slice(-3000);
+      pushEvent("paper_order", "PAPER MARKET BUY submitted for " + asset.canonicalSymbol, {
+        portfolioId: portfolio.id,
+        symbol: asset.canonicalSymbol,
+        orderId: order.id,
+        simulated: true
       });
 
       const transaction = {
@@ -417,17 +535,30 @@ export function createAgentDesk(deps) {
       status: "active",
       mode: "PAPER",
       assumptions: assumptions,
+      riskPolicy: riskPolicy,
       riskChecks: {
         paperOnly: true,
-        maxSingleAssetWeight: 0.35,
-        cashReservePercent: 5,
+        maxSingleAssetWeight: maxSingleAssetWeight,
+        maxPortfolioExposure: maxExposure,
+        cashReservePercent: (1 - investableFraction) * 100,
+        stopLossPercent: Number(riskPolicy.stopLossPercent) || 0,
+        takeProfitPercent: Number(riskPolicy.takeProfitPercent) || 0,
+        trailingStopPercent: Number(riskPolicy.trailingStopPercent) || 0,
+        cooldownHours: Number(riskPolicy.cooldownHours) || 0,
         passed: true
       }
     };
 
     paperState.accounts[portfolio.id] = account;
     paperState.transactions = paperState.transactions.concat(transactions).slice(-2000);
+    const portfolioSnapshot = appendPortfolioSnapshot(account, "initial_allocation");
     savePaperState();
+    pushEvent("portfolio_snapshot", "Saved PAPER portfolio snapshot for " + portfolio.id, {
+      portfolioId: portfolio.id,
+      snapshotId: portfolioSnapshot.id,
+      totalValue: portfolioSnapshot.totalValue,
+      grossExposure: portfolioSnapshot.grossExposure
+    });
     pushEvent("paper_account", "PAPER portfolio " + portfolio.id + " is now invested with " + positions.length + " positions", {
       portfolioId: portfolio.id,
       equity: equity,
@@ -488,6 +619,7 @@ export function createAgentDesk(deps) {
             "This system is PAPER ONLY. You may analyze, challenge, and propose portfolio changes, but you may not bypass the deterministic risk engine or claim that a real-money order was placed.\n" +
             "Use only the supplied application state for concrete portfolio and market facts. State uncertainties clearly. Be concise and specific.\n" +
             "Never invent ProChart/backtest metrics. Only report a metric if it appears explicitly in the supplied proChart.observedText. If a backtest is still running or no completed metrics are present, say DATA UNAVAILABLE or PENDING.\n" +
+            "Portfolio riskPolicy fields and calculated metrics are deterministic. Interpret them, but never override or invent them.\n" +
             "AI analysis is advisory only. PAPER execution decisions are made by the deterministic risk engine after all agent responses.\n" +
             "Current application state:\n" + contextText
         },
@@ -673,7 +805,21 @@ export function createAgentDesk(deps) {
       sendJson(res, 200, {
         paperOnly: true,
         accounts: Object.values(paperState.accounts),
-        transactions: paperState.transactions.slice(-200)
+        transactions: paperState.transactions.slice(-200),
+        orders: paperState.orders.slice(-200),
+        snapshots: paperState.snapshots.slice(-200)
+      });
+      return true;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/paper/snapshots") {
+      const portfolioId = String(url.searchParams.get("portfolioId") || "");
+      const snapshots = portfolioId
+        ? paperState.snapshots.filter(function (snapshot) { return snapshot.portfolioId === portfolioId; })
+        : paperState.snapshots;
+      sendJson(res, 200, {
+        paperOnly: true,
+        snapshots: snapshots.slice(-500)
       });
       return true;
     }
