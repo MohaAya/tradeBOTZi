@@ -49,16 +49,51 @@ export function createAgentDesk(deps) {
     return value;
   }
 
-  let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [] };
+  let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [], supervisor: null };
   try {
     const loaded = JSON.parse(fs.readFileSync(paperFile, "utf8"));
     paperState = {
       accounts: loaded.accounts || {},
       transactions: Array.isArray(loaded.transactions) ? loaded.transactions : [],
       orders: Array.isArray(loaded.orders) ? loaded.orders : [],
-      snapshots: Array.isArray(loaded.snapshots) ? loaded.snapshots : []
+      snapshots: Array.isArray(loaded.snapshots) ? loaded.snapshots : [],
+      supervisor: loaded.supervisor || null
     };
   } catch {}
+
+  const supervisorIntervalMs = Math.max(5000, Number(process.env.PAPER_SUPERVISOR_INTERVAL_MS) || 15000);
+  let supervisorBusy = false;
+  let supervisorState = Object.assign({
+    enabled: true,
+    paperOnly: true,
+    intervalMs: supervisorIntervalMs,
+    startedAt: Date.now(),
+    lastCycleAt: null,
+    lastSuccessAt: null,
+    lastError: null,
+    cycleCount: 0,
+    accountsChecked: 0,
+    actionsLastCycle: [],
+    totalActions: 0
+  }, paperState.supervisor || {});
+  supervisorState.enabled = true;
+  supervisorState.paperOnly = true;
+  supervisorState.intervalMs = supervisorIntervalMs;
+  supervisorState.running = false;
+
+  function publicSupervisorState() {
+    return Object.assign({}, supervisorState, {
+      running: supervisorBusy,
+      accountCount: Object.values(paperState.accounts || {}).filter(function (account) {
+        return account && account.status === "active";
+      }).length
+    });
+  }
+
+  function saveSupervisorState() {
+    paperState.supervisor = publicSupervisorState();
+    savePaperState();
+  }
 
   function savePaperState() {
     const temp = paperFile + ".tmp";
@@ -200,7 +235,7 @@ export function createAgentDesk(deps) {
           "cash reserve",
           "simulated fees/spread/slippage"
         ],
-        storedButNotContinuouslyAutomated: [
+        storedButNotContinuouslyAutomated: supervisorState.enabled ? [] : [
           "stop-loss",
           "take-profit",
           "trailing stop",
@@ -208,7 +243,9 @@ export function createAgentDesk(deps) {
           "scheduled rebalance",
           "maximum-drawdown trigger"
         ],
-        continuousSupervisorActive: false
+        continuousSupervisorActive: Boolean(supervisorState.enabled),
+        supervisorIntervalMs: supervisorState.intervalMs,
+        supervisorLastSuccessAt: supervisorState.lastSuccessAt
       },
       performanceStatus: {
         type: "historical_holdout_diagnostic",
@@ -601,7 +638,10 @@ export function createAgentDesk(deps) {
         stopLossPrice: stopLossPrice,
         takeProfitPrice: takeProfitPrice,
         trailingStopPercent: Number(riskPolicy.trailingStopPercent) || 0,
-        cooldownHours: Number(riskPolicy.cooldownHours) || 0
+        cooldownHours: Number(riskPolicy.cooldownHours) || 0,
+        highWaterMark: Math.max(fillPrice, marketPrice),
+        trailingStopPrice: null,
+        lastMarkedAt: Date.now()
       });
 
       const order = {
@@ -678,6 +718,19 @@ export function createAgentDesk(deps) {
       status: "active",
       mode: "PAPER",
       assumptions: assumptions,
+      targetAssets: portfolio.assets.map(function (asset, index) {
+        return {
+          canonicalSymbol: asset.canonicalSymbol,
+          provider: asset.provider,
+          targetWeight: weights[index] / totalWeight
+        };
+      }),
+      cooldowns: {},
+      lastRebalancedAt: Date.now(),
+      nextRebalanceAt: Date.now() + Math.max(1, Number(riskPolicy.rebalanceDays) || 7) * 86400000,
+      lastSupervisorAt: null,
+      lastSnapshotAt: Date.now(),
+      supervisorActionCount: 0,
       riskPolicy: riskPolicy,
       riskChecks: {
         paperOnly: true,
@@ -757,7 +810,7 @@ export function createAgentDesk(deps) {
             "Use only the supplied application state for concrete portfolio and market facts. State uncertainties clearly. Be concise and specific.\n" +
             "Never invent ProChart/backtest metrics. Only report a metric if it appears explicitly in the supplied proChart.observedText. If a backtest is still running or no completed metrics are present, say DATA UNAVAILABLE or PENDING.\n" +
             "Portfolio riskPolicy fields and calculated metrics are deterministic. Interpret them, but never override or invent them.\n" +
-            "Execution truth: the current PAPER engine enforces maximum asset weight, maximum portfolio exposure, cash reserve, and simulated costs when the initial allocation is created. Stop-loss, take-profit, trailing-stop, cooldown, rebalance interval, and maximum-drawdown rules are currently stored policy parameters and position thresholds only; there is not yet a continuous supervisor that automatically fires them. Never claim those rules are already running automatically.\n" +
+            "Execution truth: the PAPER Portfolio Supervisor runs continuously on the VPS. It marks active PAPER positions to market, updates trailing peaks, executes simulated stop-loss/take-profit/trailing-stop exits, honors cooldowns, performs scheduled deterministic rebalancing, enforces portfolio maximum-drawdown risk-off liquidation, and persists orders/fills/snapshots. It remains PAPER ONLY and cannot place real-money orders. Only claim a supervisor action occurred if the supplied state or audit events show it.\n" +
             "Performance truth: portfolio selection and sizing use an earlier construction window, while reported performance/risk metrics use a later holdout window. These are historical holdout diagnostics, not a guarantee, forecast, live track record, or full walk-forward execution backtest.\n" +
             "The portfolio facts supplied below already format percentages with explicit percent signs. Use those strings exactly. Do not reconvert, reannualize, or reinterpret their units.\n" +
             "Recovery Factor is total return divided by absolute maximum drawdown; higher values indicate stronger recovery efficiency. Do not reverse that interpretation.\n" +
