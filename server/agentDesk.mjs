@@ -763,6 +763,595 @@ export function createAgentDesk(deps) {
     return account;
   }
 
+  function paperPriceMap(snapshot) {
+    const prices = new Map();
+    for (const observation of (snapshot && snapshot.observations) || []) {
+      const price = Number(observation && observation.price);
+      if (!observation || !observation.canonicalSymbol || !Number.isFinite(price) || price <= 0) continue;
+      const existing = prices.get(observation.canonicalSymbol);
+      if (!existing || observation.provider === "binance") {
+        prices.set(observation.canonicalSymbol, observation);
+      }
+    }
+    return prices;
+  }
+
+  function executionRates(account, market) {
+    const assumptions = account.assumptions || {
+      feesPercent: 0.10,
+      spreadPercent: 0.05,
+      slippagePercent: 0.02
+    };
+    const observedSpreadPercent = market && market.spread && market.price
+      ? Math.max(0, (Number(market.spread) / Number(market.price)) * 100)
+      : 0;
+    const spreadPercent = observedSpreadPercent > 0
+      ? observedSpreadPercent
+      : Number(assumptions.spreadPercent) || 0.05;
+    return {
+      feeRate: (Number(assumptions.feesPercent) || 0.10) / 100,
+      spreadRate: spreadPercent / 100,
+      slippageRate: (Number(assumptions.slippagePercent) || 0.02) / 100
+    };
+  }
+
+  function targetWeightFor(account, symbol) {
+    const target = (account.targetAssets || []).find(function (asset) {
+      return asset.canonicalSymbol === symbol;
+    });
+    return Number(target && target.targetWeight) || 0;
+  }
+
+  function ensurePositionThresholds(account, position) {
+    const policy = account.riskPolicy || {};
+    const stopLossPercent = Math.max(0, Number(policy.stopLossPercent) || 0);
+    const takeProfitPercent = Math.max(0, Number(policy.takeProfitPercent) || 0);
+    position.stopLossPrice = Number(position.stopLossPrice) > 0
+      ? Number(position.stopLossPrice)
+      : Number(position.averageCost) * (1 - stopLossPercent / 100);
+    position.takeProfitPrice = Number(position.takeProfitPrice) > 0
+      ? Number(position.takeProfitPrice)
+      : Number(position.averageCost) * (1 + takeProfitPercent / 100);
+    position.trailingStopPercent = Number(position.trailingStopPercent) >= 0
+      ? Number(position.trailingStopPercent)
+      : Math.max(0, Number(policy.trailingStopPercent) || 0);
+    position.cooldownHours = Number(position.cooldownHours) >= 0
+      ? Number(position.cooldownHours)
+      : Math.max(0, Number(policy.cooldownHours) || 0);
+    position.highWaterMark = Math.max(
+      Number(position.highWaterMark) || 0,
+      Number(position.averageCost) || 0,
+      Number(position.currentPrice) || 0
+    );
+    if (position.trailingStopPercent > 0 && position.highWaterMark > Number(position.averageCost || 0)) {
+      position.trailingStopPrice = position.highWaterMark * (1 - position.trailingStopPercent / 100);
+    } else {
+      position.trailingStopPrice = null;
+    }
+  }
+
+  function recomputeAccount(account) {
+    const positions = Array.isArray(account.positions) ? account.positions : [];
+    const marketValue = positions.reduce(function (sum, position) {
+      return sum + Math.max(0, Number(position.marketValue) || 0);
+    }, 0);
+    account.unrealizedPnl = positions.reduce(function (sum, position) {
+      return sum + (Number(position.unrealizedPnl) || 0);
+    }, 0);
+    account.equity = Math.max(0, Number(account.cash) || 0) + marketValue;
+    account.peakEquity = Math.max(Number(account.peakEquity) || 0, account.equity);
+    account.drawdown = account.peakEquity > 0
+      ? (account.equity - account.peakEquity) / account.peakEquity
+      : 0;
+    account.updatedAt = Date.now();
+    return account;
+  }
+
+  function recordSupervisorSell(account, position, market, quantity, reason, now) {
+    const marketPrice = Number(market && market.price);
+    const qty = Math.min(Math.max(0, Number(quantity) || 0), Math.max(0, Number(position.quantity) || 0));
+    if (!Number.isFinite(marketPrice) || marketPrice <= 0 || qty <= 0) return null;
+
+    const rates = executionRates(account, market);
+    const fillPrice = Math.max(0.00000001, marketPrice * (1 - rates.spreadRate / 2 - rates.slippageRate));
+    const gross = qty * fillPrice;
+    const fees = gross * rates.feeRate;
+    const proceeds = Math.max(0, gross - fees);
+    const costBasis = qty * (Number(position.averageCost) || 0);
+    const realized = proceeds - costBasis;
+
+    const order = {
+      id: "supord-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      portfolioId: account.portfolioId,
+      canonicalSymbol: position.canonicalSymbol,
+      provider: market.provider || position.provider,
+      type: "MARKET",
+      side: "sell",
+      status: "FILLED",
+      requestedQuantity: qty,
+      filledNotional: gross,
+      quantity: qty,
+      submittedAt: now,
+      filledAt: now,
+      fillPrice: fillPrice,
+      simulated: true,
+      supervisor: true,
+      reason: reason
+    };
+    paperState.orders = paperState.orders.concat([order]).slice(-3000);
+
+    const transaction = {
+      id: "suptx-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      portfolioId: account.portfolioId,
+      timestamp: now,
+      canonicalSymbol: position.canonicalSymbol,
+      provider: market.provider || position.provider,
+      side: "sell",
+      quantity: qty,
+      price: fillPrice,
+      fees: fees,
+      total: proceeds,
+      realizedPnl: realized,
+      simulated: true,
+      supervisor: true,
+      reason: reason
+    };
+    paperState.transactions = paperState.transactions.concat([transaction]).slice(-3000);
+    account.transactions = (account.transactions || []).concat([transaction]).slice(-1000);
+    account.cash = (Number(account.cash) || 0) + proceeds;
+    account.realizedPnl = (Number(account.realizedPnl) || 0) + realized;
+    account.totalFees = (Number(account.totalFees) || 0) + fees;
+
+    const remaining = Math.max(0, Number(position.quantity) - qty);
+    position.quantity = remaining;
+    position.currentPrice = marketPrice;
+    position.marketValue = remaining * marketPrice;
+    position.unrealizedPnl = remaining * (marketPrice - Number(position.averageCost || 0));
+    position.lastMarkedAt = now;
+
+    if (remaining <= 1e-12) {
+      const cooldownHours = Math.max(0, Number(position.cooldownHours) || Number(account.riskPolicy && account.riskPolicy.cooldownHours) || 0);
+      account.cooldowns = account.cooldowns || {};
+      account.cooldowns[position.canonicalSymbol] = now + cooldownHours * 3600000;
+    }
+
+    pushEvent("paper_order", "Supervisor PAPER SELL submitted for " + position.canonicalSymbol + " (" + reason + ")", {
+      portfolioId: account.portfolioId,
+      symbol: position.canonicalSymbol,
+      orderId: order.id,
+      reason: reason,
+      simulated: true,
+      supervisor: true
+    });
+    pushEvent("paper_fill", "Supervisor PAPER SELL " + position.canonicalSymbol + ": " + qty.toFixed(6) + " @ " + fillPrice.toFixed(4) + " (" + reason + ")", {
+      portfolioId: account.portfolioId,
+      symbol: position.canonicalSymbol,
+      quantity: qty,
+      price: fillPrice,
+      realizedPnl: realized,
+      reason: reason,
+      simulated: true,
+      supervisor: true
+    });
+
+    return { order: order, transaction: transaction, realizedPnl: realized };
+  }
+
+  function recordSupervisorBuy(account, symbol, market, budget, reason, now) {
+    const marketPrice = Number(market && market.price);
+    const spendBudget = Math.max(0, Number(budget) || 0);
+    if (!Number.isFinite(marketPrice) || marketPrice <= 0 || spendBudget <= 0) return null;
+
+    const rates = executionRates(account, market);
+    const fillPrice = marketPrice * (1 + rates.spreadRate / 2 + rates.slippageRate);
+    const notional = spendBudget / (1 + rates.feeRate);
+    const fees = notional * rates.feeRate;
+    const total = notional + fees;
+    if (total > (Number(account.cash) || 0) + 1e-8) return null;
+
+    const quantity = notional / fillPrice;
+    const existing = (account.positions || []).find(function (position) {
+      return position.canonicalSymbol === symbol;
+    });
+    const targetWeight = targetWeightFor(account, symbol);
+    let position = existing;
+
+    if (position) {
+      const oldQty = Number(position.quantity) || 0;
+      const newQty = oldQty + quantity;
+      const weightedCost = oldQty * (Number(position.averageCost) || 0) + quantity * fillPrice;
+      position.quantity = newQty;
+      position.averageCost = newQty > 0 ? weightedCost / newQty : fillPrice;
+    } else {
+      position = {
+        canonicalSymbol: symbol,
+        provider: market.provider,
+        quantity: quantity,
+        averageCost: fillPrice,
+        currentPrice: marketPrice,
+        marketValue: quantity * marketPrice,
+        unrealizedPnl: quantity * (marketPrice - fillPrice),
+        targetWeight: targetWeight,
+        portfolioWeight: 0,
+        trailingStopPercent: Number(account.riskPolicy && account.riskPolicy.trailingStopPercent) || 0,
+        cooldownHours: Number(account.riskPolicy && account.riskPolicy.cooldownHours) || 0,
+        highWaterMark: Math.max(fillPrice, marketPrice),
+        trailingStopPrice: null,
+        lastMarkedAt: now
+      };
+      account.positions = (account.positions || []).concat([position]);
+    }
+
+    position.provider = market.provider || position.provider;
+    position.currentPrice = marketPrice;
+    position.marketValue = Number(position.quantity) * marketPrice;
+    position.unrealizedPnl = Number(position.quantity) * (marketPrice - Number(position.averageCost));
+    position.targetWeight = targetWeight;
+    position.highWaterMark = Math.max(Number(position.highWaterMark) || 0, marketPrice, Number(position.averageCost) || 0);
+    position.lastMarkedAt = now;
+    position.stopLossPrice = Number(position.averageCost) * (1 - Math.max(0, Number(account.riskPolicy && account.riskPolicy.stopLossPercent) || 0) / 100);
+    position.takeProfitPrice = Number(position.averageCost) * (1 + Math.max(0, Number(account.riskPolicy && account.riskPolicy.takeProfitPercent) || 0) / 100);
+    ensurePositionThresholds(account, position);
+
+    account.cash = Math.max(0, (Number(account.cash) || 0) - total);
+    account.totalFees = (Number(account.totalFees) || 0) + fees;
+
+    const order = {
+      id: "supord-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      portfolioId: account.portfolioId,
+      canonicalSymbol: symbol,
+      provider: market.provider,
+      type: "MARKET",
+      side: "buy",
+      status: "FILLED",
+      requestedNotional: spendBudget,
+      filledNotional: notional,
+      quantity: quantity,
+      submittedAt: now,
+      filledAt: now,
+      fillPrice: fillPrice,
+      simulated: true,
+      supervisor: true,
+      reason: reason
+    };
+    paperState.orders = paperState.orders.concat([order]).slice(-3000);
+
+    const transaction = {
+      id: "suptx-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      portfolioId: account.portfolioId,
+      timestamp: now,
+      canonicalSymbol: symbol,
+      provider: market.provider,
+      side: "buy",
+      quantity: quantity,
+      price: fillPrice,
+      fees: fees,
+      total: total,
+      simulated: true,
+      supervisor: true,
+      reason: reason
+    };
+    paperState.transactions = paperState.transactions.concat([transaction]).slice(-3000);
+    account.transactions = (account.transactions || []).concat([transaction]).slice(-1000);
+
+    pushEvent("paper_order", "Supervisor PAPER BUY submitted for " + symbol + " (" + reason + ")", {
+      portfolioId: account.portfolioId,
+      symbol: symbol,
+      orderId: order.id,
+      reason: reason,
+      simulated: true,
+      supervisor: true
+    });
+    pushEvent("paper_fill", "Supervisor PAPER BUY " + symbol + ": " + quantity.toFixed(6) + " @ " + fillPrice.toFixed(4) + " (" + reason + ")", {
+      portfolioId: account.portfolioId,
+      symbol: symbol,
+      quantity: quantity,
+      price: fillPrice,
+      reason: reason,
+      simulated: true,
+      supervisor: true
+    });
+
+    return { order: order, transaction: transaction };
+  }
+
+  function markAccountToMarket(account, prices, now) {
+    for (const position of account.positions || []) {
+      const market = prices.get(position.canonicalSymbol);
+      const marketPrice = Number(market && market.price);
+      if (!Number.isFinite(marketPrice) || marketPrice <= 0) continue;
+      position.currentPrice = marketPrice;
+      position.marketValue = (Number(position.quantity) || 0) * marketPrice;
+      position.unrealizedPnl = (Number(position.quantity) || 0) * (marketPrice - Number(position.averageCost || 0));
+      position.highWaterMark = Math.max(Number(position.highWaterMark) || 0, marketPrice, Number(position.averageCost) || 0);
+      position.lastMarkedAt = now;
+      ensurePositionThresholds(account, position);
+      if (position.trailingStopPercent > 0 && position.highWaterMark > Number(position.averageCost || 0)) {
+        position.trailingStopPrice = position.highWaterMark * (1 - position.trailingStopPercent / 100);
+      }
+    }
+    recomputeAccount(account);
+  }
+
+  function triggeredExitReason(account, position) {
+    const price = Number(position.currentPrice);
+    if (!Number.isFinite(price) || price <= 0) return null;
+    const stopLoss = Number(position.stopLossPrice);
+    const takeProfit = Number(position.takeProfitPrice);
+    const trailingStop = Number(position.trailingStopPrice);
+
+    if (Number.isFinite(stopLoss) && stopLoss > 0 && price <= stopLoss) return "stop_loss";
+    if (Number.isFinite(takeProfit) && takeProfit > 0 && price >= takeProfit) return "take_profit";
+    if (
+      Number.isFinite(trailingStop) &&
+      trailingStop > 0 &&
+      Number(position.highWaterMark) > Number(position.averageCost || 0) &&
+      price <= trailingStop
+    ) return "trailing_stop";
+    return null;
+  }
+
+  function rebalanceDue(account, now) {
+    const next = Number(account.nextRebalanceAt);
+    if (Number.isFinite(next) && next > 0) return now >= next;
+    const days = Math.max(1, Number(account.riskPolicy && account.riskPolicy.rebalanceDays) || 7);
+    const last = Number(account.lastRebalancedAt) || Number(account.startedAt) || now;
+    account.nextRebalanceAt = last + days * 86400000;
+    return now >= account.nextRebalanceAt;
+  }
+
+  function scheduledRebalance(account, prices, now, actions) {
+    const policy = account.riskPolicy || {};
+    const exposure = Math.max(0.25, Math.min(0.98, Number(policy.maxPortfolioExposure) || 0.95));
+    const reserveFraction = Math.max(0, Math.min(0.75, Number(policy.cashReserve) || 0.05));
+    const investableFraction = Math.min(exposure, 1 - reserveFraction);
+    recomputeAccount(account);
+    const targetInvested = account.equity * investableFraction;
+    const threshold = Math.max(25, account.equity * 0.005);
+    const targetAssets = Array.isArray(account.targetAssets) ? account.targetAssets : [];
+
+    // Sell overweight positions first.
+    for (const position of [...(account.positions || [])]) {
+      const market = prices.get(position.canonicalSymbol);
+      if (!market) continue;
+      const target = targetAssets.find(function (asset) {
+        return asset.canonicalSymbol === position.canonicalSymbol;
+      });
+      const targetValue = target ? targetInvested * (Number(target.targetWeight) || 0) : 0;
+      const excess = (Number(position.marketValue) || 0) - targetValue;
+      if (excess <= threshold) continue;
+      const qty = Math.min(Number(position.quantity) || 0, excess / Number(market.price));
+      const result = recordSupervisorSell(account, position, market, qty, "scheduled_rebalance", now);
+      if (result) {
+        actions.push({
+          portfolioId: account.portfolioId,
+          type: "rebalance_sell",
+          symbol: position.canonicalSymbol,
+          quantity: qty
+        });
+      }
+    }
+    account.positions = (account.positions || []).filter(function (position) {
+      return Number(position.quantity) > 1e-12;
+    });
+    markAccountToMarket(account, prices, now);
+
+    const minimumCash = account.equity * (1 - investableFraction);
+    for (const target of targetAssets) {
+      const cooldownUntil = Number(account.cooldowns && account.cooldowns[target.canonicalSymbol]) || 0;
+      if (cooldownUntil > now) {
+        pushEvent("supervisor_cooldown", "Rebalance skipped " + target.canonicalSymbol + " until cooldown expires", {
+          portfolioId: account.portfolioId,
+          symbol: target.canonicalSymbol,
+          cooldownUntil: cooldownUntil,
+          supervisor: true
+        });
+        continue;
+      }
+
+      const market = prices.get(target.canonicalSymbol);
+      if (!market) continue;
+      const position = (account.positions || []).find(function (candidate) {
+        return candidate.canonicalSymbol === target.canonicalSymbol;
+      });
+      const currentValue = Number(position && position.marketValue) || 0;
+      const targetValue = targetInvested * (Number(target.targetWeight) || 0);
+      const shortage = targetValue - currentValue;
+      if (shortage <= threshold) continue;
+
+      const available = Math.max(0, (Number(account.cash) || 0) - minimumCash);
+      const budget = Math.min(shortage, available);
+      if (budget <= threshold) continue;
+      const result = recordSupervisorBuy(account, target.canonicalSymbol, market, budget, "scheduled_rebalance", now);
+      if (result) {
+        actions.push({
+          portfolioId: account.portfolioId,
+          type: "rebalance_buy",
+          symbol: target.canonicalSymbol,
+          notional: budget
+        });
+      }
+    }
+
+    markAccountToMarket(account, prices, now);
+    account.lastRebalancedAt = now;
+    account.nextRebalanceAt = now + Math.max(1, Number(policy.rebalanceDays) || 7) * 86400000;
+    pushEvent("supervisor_rebalance", "Scheduled PAPER rebalance completed for " + account.portfolioId, {
+      portfolioId: account.portfolioId,
+      equity: account.equity,
+      nextRebalanceAt: account.nextRebalanceAt,
+      supervisor: true
+    });
+  }
+
+  async function runSupervisorCycle(reason) {
+    if (supervisorBusy) {
+      return Object.assign({ skipped: true, reason: "cycle_already_running" }, publicSupervisorState());
+    }
+
+    supervisorBusy = true;
+    supervisorState.running = true;
+    const now = Date.now();
+    const actions = [];
+    let accountsChecked = 0;
+
+    try {
+      const activeAccounts = Object.values(paperState.accounts || {}).filter(function (account) {
+        return account && account.status === "active";
+      });
+
+      supervisorState.lastCycleAt = now;
+      if (activeAccounts.length === 0) {
+        supervisorState.lastSuccessAt = now;
+        supervisorState.lastError = null;
+        supervisorState.cycleCount = (Number(supervisorState.cycleCount) || 0) + 1;
+        supervisorState.accountsChecked = 0;
+        supervisorState.actionsLastCycle = [];
+        saveSupervisorState();
+        return publicSupervisorState();
+      }
+
+      const snapshot = await serverMarketSnapshot();
+      const prices = paperPriceMap(snapshot);
+
+      for (const account of activeAccounts) {
+        accountsChecked += 1;
+        account.cooldowns = account.cooldowns || {};
+        account.targetAssets = Array.isArray(account.targetAssets) ? account.targetAssets : [];
+        markAccountToMarket(account, prices, now);
+
+        // Per-position deterministic exits.
+        for (const position of [...(account.positions || [])]) {
+          const market = prices.get(position.canonicalSymbol);
+          if (!market) continue;
+          const exitReason = triggeredExitReason(account, position);
+          if (!exitReason) continue;
+
+          const quantity = Number(position.quantity) || 0;
+          const result = recordSupervisorSell(account, position, market, quantity, exitReason, now);
+          if (result) {
+            actions.push({
+              portfolioId: account.portfolioId,
+              type: exitReason,
+              symbol: position.canonicalSymbol,
+              quantity: quantity,
+              realizedPnl: result.realizedPnl
+            });
+          }
+        }
+        account.positions = (account.positions || []).filter(function (position) {
+          return Number(position.quantity) > 1e-12;
+        });
+        markAccountToMarket(account, prices, now);
+
+        // Portfolio max-drawdown risk-off liquidation.
+        const limit = Math.max(0, Number(account.riskPolicy && account.riskPolicy.maxDrawdownLimit) || 0);
+        if (limit > 0 && account.drawdown <= -limit && (account.positions || []).length > 0) {
+          pushEvent("supervisor_drawdown", "Portfolio " + account.portfolioId + " breached max drawdown " + (limit * 100).toFixed(1) + "%; entering PAPER risk-off", {
+            portfolioId: account.portfolioId,
+            drawdown: account.drawdown,
+            limit: limit,
+            supervisor: true
+          });
+
+          for (const position of [...account.positions]) {
+            const market = prices.get(position.canonicalSymbol);
+            if (!market) continue;
+            const quantity = Number(position.quantity) || 0;
+            const result = recordSupervisorSell(account, position, market, quantity, "portfolio_drawdown_limit", now);
+            if (result) {
+              actions.push({
+                portfolioId: account.portfolioId,
+                type: "portfolio_drawdown_limit",
+                symbol: position.canonicalSymbol,
+                quantity: quantity,
+                realizedPnl: result.realizedPnl
+              });
+            }
+          }
+          account.positions = (account.positions || []).filter(function (position) {
+            return Number(position.quantity) > 1e-12;
+          });
+          markAccountToMarket(account, prices, now);
+          account.status = "risk_off";
+          account.riskOffAt = now;
+          account.riskOffReason = "max_drawdown_limit";
+          account.nextRebalanceAt = null;
+          actions.push({
+            portfolioId: account.portfolioId,
+            type: "risk_off",
+            drawdown: account.drawdown
+          });
+        } else if (account.status === "active" && rebalanceDue(account, now)) {
+          scheduledRebalance(account, prices, now, actions);
+        }
+
+        account.lastSupervisorAt = now;
+        account.supervisorActionCount = (Number(account.supervisorActionCount) || 0) +
+          actions.filter(function (action) { return action.portfolioId === account.portfolioId; }).length;
+
+        const actionForAccount = actions.some(function (action) {
+          return action.portfolioId === account.portfolioId;
+        });
+        const dueSnapshot = !Number(account.lastSnapshotAt) || now - Number(account.lastSnapshotAt) >= 300000;
+        if (actionForAccount || dueSnapshot) {
+          const snapshotRecord = appendPortfolioSnapshot(account, actionForAccount ? "supervisor_action" : "mark_to_market");
+          account.lastSnapshotAt = now;
+          pushEvent("portfolio_snapshot", "Supervisor saved PAPER snapshot for " + account.portfolioId, {
+            portfolioId: account.portfolioId,
+            snapshotId: snapshotRecord.id,
+            totalValue: snapshotRecord.totalValue,
+            grossExposure: snapshotRecord.grossExposure,
+            supervisor: true
+          });
+        }
+      }
+
+      supervisorState.lastSuccessAt = Date.now();
+      supervisorState.lastError = null;
+      supervisorState.cycleCount = (Number(supervisorState.cycleCount) || 0) + 1;
+      supervisorState.accountsChecked = accountsChecked;
+      supervisorState.actionsLastCycle = actions.slice(-50);
+      supervisorState.totalActions = (Number(supervisorState.totalActions) || 0) + actions.length;
+      supervisorState.lastReason = reason || "interval";
+      paperState.supervisor = publicSupervisorState();
+      savePaperState();
+
+      pushEvent("supervisor_cycle", "PAPER Portfolio Supervisor cycle completed: " + accountsChecked + " account(s), " + actions.length + " action(s)", {
+        accountsChecked: accountsChecked,
+        actionCount: actions.length,
+        reason: reason || "interval",
+        supervisor: true
+      });
+
+      return Object.assign({ actions: actions }, publicSupervisorState());
+    } catch (error) {
+      supervisorState.lastError = String(error);
+      supervisorState.lastCycleAt = now;
+      paperState.supervisor = publicSupervisorState();
+      savePaperState();
+      pushEvent("supervisor_error", "PAPER Portfolio Supervisor cycle failed: " + String(error), {
+        supervisor: true
+      });
+      throw error;
+    } finally {
+      supervisorBusy = false;
+      supervisorState.running = false;
+      paperState.supervisor = publicSupervisorState();
+      savePaperState();
+    }
+  }
+
+  const supervisorTimer = setInterval(function () {
+    runSupervisorCycle("interval").catch(function () {});
+  }, supervisorIntervalMs);
+  if (supervisorTimer.unref) supervisorTimer.unref();
+
+  const supervisorStartupTimer = setTimeout(function () {
+    runSupervisorCycle("startup").catch(function () {});
+  }, 2500);
+  if (supervisorStartupTimer.unref) supervisorStartupTimer.unref();
+
   async function runCommand(jobId, request) {
     const command = String(request.command || "").trim();
     const context = request.context || {};
