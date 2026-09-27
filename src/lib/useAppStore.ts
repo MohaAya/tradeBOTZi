@@ -89,7 +89,7 @@ export function useAppStore(): AppStore {
       )).slice(0, 20);
 
       if (topSymbols.length > 0) {
-        const hist = await fetchHistoricalData(topSymbols, '1d', 90);
+        const hist = await fetchHistoricalData(topSymbols, '1d', 120);
         setHistoricalData(hist);
       }
     } catch (e: any) {
@@ -124,11 +124,11 @@ export function useAppStore(): AppStore {
       const mergedHistory = new Map(historicalData);
       const missingSymbols = candidateSymbols.filter(symbol => {
         const bars = mergedHistory.get(symbol);
-        return !bars || bars.length < 30;
+        return !bars || bars.length < 100;
       });
 
       if (missingSymbols.length > 0) {
-        const fetched = await fetchHistoricalData(missingSymbols, '1d', 90);
+        const fetched = await fetchHistoricalData(missingSymbols, '1d', 120);
         fetched.forEach((bars, symbol) => mergedHistory.set(symbol, bars));
         setHistoricalData(new Map(mergedHistory));
       }
