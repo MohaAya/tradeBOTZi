@@ -236,7 +236,7 @@ async function hermesChat(messages) {
     method: "POST",
     headers: { ...bearerHeaders(HERMES_KEY), "X-Hermes-Session-Key": "tradebotzi" },
     body: JSON.stringify({ model: "hermes-agent", messages, stream: false })
-  }, 120000);
+  }, 60000);
 }
 
 async function ollamaChat(messages) {
@@ -244,7 +244,7 @@ async function ollamaChat(messages) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: OLLAMA_MODEL, messages, stream: false })
-  }, 120000);
+  }, 90000);
 }
 
 function extractContent(provider, result) {
