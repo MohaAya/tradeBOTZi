@@ -1218,6 +1218,17 @@ export function createAgentDesk(deps) {
         accountsChecked += 1;
         account.cooldowns = account.cooldowns || {};
         account.targetAssets = Array.isArray(account.targetAssets) ? account.targetAssets : [];
+        if (account.targetAssets.length === 0 && Array.isArray(account.positions)) {
+          account.targetAssets = account.positions
+            .filter(function (position) { return Number(position.targetWeight) > 0; })
+            .map(function (position) {
+              return {
+                canonicalSymbol: position.canonicalSymbol,
+                provider: position.provider,
+                targetWeight: Number(position.targetWeight)
+              };
+            });
+        }
         markAccountToMarket(account, prices, now);
 
         // Per-position deterministic exits.
@@ -1562,6 +1573,7 @@ export function createAgentDesk(deps) {
           installed: Boolean(chromiumExecutable()),
           screenshotAvailable: Boolean(latestScreenshot)
         },
+        supervisor: publicSupervisorState(),
         paperOnly: true
       });
       return true;
@@ -1635,13 +1647,42 @@ export function createAgentDesk(deps) {
       return true;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/paper/supervisor") {
+      sendJson(res, 200, {
+        ok: true,
+        paperOnly: true,
+        supervisor: publicSupervisorState()
+      });
+      return true;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/paper/supervisor/run") {
+      try {
+        const result = await runSupervisorCycle("manual");
+        sendJson(res, 200, {
+          ok: true,
+          paperOnly: true,
+          supervisor: result
+        });
+      } catch (error) {
+        sendJson(res, 500, {
+          ok: false,
+          paperOnly: true,
+          error: String(error),
+          supervisor: publicSupervisorState()
+        });
+      }
+      return true;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/paper/accounts") {
       sendJson(res, 200, {
         paperOnly: true,
         accounts: Object.values(paperState.accounts),
         transactions: paperState.transactions.slice(-200),
         orders: paperState.orders.slice(-200),
-        snapshots: paperState.snapshots.slice(-200)
+        snapshots: paperState.snapshots.slice(-200),
+        supervisor: publicSupervisorState()
       });
       return true;
     }
