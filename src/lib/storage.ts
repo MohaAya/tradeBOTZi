@@ -77,7 +77,20 @@ export function saveAgents(agents: TradingAgent[]): void {
   save(KEYS.AGENTS, agents);
 }
 export function loadPortfolios(): Portfolio[] {
-  return load<Portfolio[]>(KEYS.PORTFOLIOS, []);
+  const portfolios = load<Portfolio[]>(KEYS.PORTFOLIOS, []);
+  // Invalidate pre-risk-policy portfolio snapshots after schema upgrades.
+  // Fresh portfolios are rebuilt from live market/history data instead of
+  // guessing missing risk rules or advanced metrics.
+  return portfolios.filter(p =>
+    Boolean(
+      p &&
+      p.riskPolicy &&
+      p.metrics &&
+      typeof p.metrics.omegaRatio !== 'undefined' &&
+      typeof p.metrics.ulcerIndex !== 'undefined' &&
+      typeof p.metrics.recoveryFactor !== 'undefined'
+    )
+  );
 }
 export function savePortfolios(portfolios: Portfolio[]): void {
   save(KEYS.PORTFOLIOS, portfolios);
