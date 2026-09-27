@@ -49,7 +49,7 @@ export function createAgentDesk(deps) {
     return value;
   }
 
-  let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [], supervisor: null };
+  let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [], supervisor: null, supervisorRuns: [] };
   try {
     const loaded = JSON.parse(fs.readFileSync(paperFile, "utf8"));
     paperState = {
@@ -57,12 +57,14 @@ export function createAgentDesk(deps) {
       transactions: Array.isArray(loaded.transactions) ? loaded.transactions : [],
       orders: Array.isArray(loaded.orders) ? loaded.orders : [],
       snapshots: Array.isArray(loaded.snapshots) ? loaded.snapshots : [],
-      supervisor: loaded.supervisor || null
+      supervisor: loaded.supervisor || null,
+      supervisorRuns: Array.isArray(loaded.supervisorRuns) ? loaded.supervisorRuns : []
     };
   } catch {}
 
   const supervisorIntervalMs = Math.max(5000, Number(process.env.PAPER_SUPERVISOR_INTERVAL_MS) || 15000);
   let supervisorBusy = false;
+  let activeSupervisorCycleId = null;
   let supervisorState = Object.assign({
     enabled: true,
     paperOnly: true,
@@ -136,12 +138,16 @@ export function createAgentDesk(deps) {
   }
 
   function pushEvent(type, message, extra) {
+    const details = Object.assign({}, extra || {});
+    if (details.supervisor && !details.cycleId && activeSupervisorCycleId) {
+      details.cycleId = activeSupervisorCycleId;
+    }
     const event = Object.assign({
       id: "evt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
       timestamp: Date.now(),
       type: type,
       message: message
-    }, extra || {});
+    }, details);
     events.push(event);
     if (events.length > 1000) events.splice(0, events.length - 1000);
     saveAgentState();
@@ -1192,8 +1198,21 @@ export function createAgentDesk(deps) {
     supervisorBusy = true;
     supervisorState.running = true;
     const now = Date.now();
+    const cycleId = "supcycle-" + now + "-" + Math.random().toString(36).slice(2, 8);
+    activeSupervisorCycleId = cycleId;
+    supervisorState.currentCycleId = cycleId;
     const actions = [];
     let accountsChecked = 0;
+    const runRecord = {
+      cycleId: cycleId,
+      reason: reason || "interval",
+      startedAt: now,
+      finishedAt: null,
+      status: "running",
+      accountsChecked: 0,
+      actions: [],
+      error: null
+    };
 
     try {
       const activeAccounts = Object.values(paperState.accounts || {}).filter(function (account) {
@@ -1207,8 +1226,13 @@ export function createAgentDesk(deps) {
         supervisorState.cycleCount = (Number(supervisorState.cycleCount) || 0) + 1;
         supervisorState.accountsChecked = 0;
         supervisorState.actionsLastCycle = [];
+        runRecord.finishedAt = Date.now();
+        runRecord.status = "done";
+        runRecord.accountsChecked = 0;
+        runRecord.actions = [];
+        paperState.supervisorRuns = paperState.supervisorRuns.concat([runRecord]).slice(-200);
         saveSupervisorState();
-        return publicSupervisorState();
+        return Object.assign({ cycleId: cycleId }, publicSupervisorState());
       }
 
       const snapshot = await serverMarketSnapshot();
@@ -1325,6 +1349,13 @@ export function createAgentDesk(deps) {
       supervisorState.actionsLastCycle = actions.slice(-50);
       supervisorState.totalActions = (Number(supervisorState.totalActions) || 0) + actions.length;
       supervisorState.lastReason = reason || "interval";
+      supervisorState.lastCycleId = cycleId;
+      supervisorState.currentCycleId = null;
+      runRecord.finishedAt = Date.now();
+      runRecord.status = "done";
+      runRecord.accountsChecked = accountsChecked;
+      runRecord.actions = actions.slice(-100);
+      paperState.supervisorRuns = paperState.supervisorRuns.concat([runRecord]).slice(-200);
       paperState.supervisor = publicSupervisorState();
       savePaperState();
 
@@ -1335,10 +1366,18 @@ export function createAgentDesk(deps) {
         supervisor: true
       });
 
-      return Object.assign({ actions: actions }, publicSupervisorState());
+      return Object.assign({ cycleId: cycleId, actions: actions }, publicSupervisorState());
     } catch (error) {
       supervisorState.lastError = String(error);
       supervisorState.lastCycleAt = now;
+      supervisorState.lastCycleId = cycleId;
+      supervisorState.currentCycleId = null;
+      runRecord.finishedAt = Date.now();
+      runRecord.status = "error";
+      runRecord.accountsChecked = accountsChecked;
+      runRecord.actions = actions.slice(-100);
+      runRecord.error = String(error);
+      paperState.supervisorRuns = paperState.supervisorRuns.concat([runRecord]).slice(-200);
       paperState.supervisor = publicSupervisorState();
       savePaperState();
       pushEvent("supervisor_error", "PAPER Portfolio Supervisor cycle failed: " + String(error), {
@@ -1347,7 +1386,9 @@ export function createAgentDesk(deps) {
       throw error;
     } finally {
       supervisorBusy = false;
+      activeSupervisorCycleId = null;
       supervisorState.running = false;
+      supervisorState.currentCycleId = null;
       paperState.supervisor = publicSupervisorState();
       savePaperState();
     }
@@ -1647,11 +1688,22 @@ export function createAgentDesk(deps) {
       return true;
     }
 
+    if (req.method === "GET" && url.pathname === "/api/paper/supervisor/runs") {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 20)));
+      sendJson(res, 200, {
+        ok: true,
+        paperOnly: true,
+        runs: (paperState.supervisorRuns || []).slice(-limit).reverse()
+      });
+      return true;
+    }
+
     if (req.method === "GET" && url.pathname === "/api/paper/supervisor") {
       sendJson(res, 200, {
         ok: true,
         paperOnly: true,
-        supervisor: publicSupervisorState()
+        supervisor: publicSupervisorState(),
+        supervisorRuns: (paperState.supervisorRuns || []).slice(-20)
       });
       return true;
     }
