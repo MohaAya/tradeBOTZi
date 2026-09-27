@@ -101,11 +101,27 @@ export interface PortfolioAsset {
   assetClass: AssetClass;
 }
 
+export interface PortfolioRiskPolicy {
+  riskScore: number;
+  riskBand: 'LOW' | 'MODERATE' | 'HIGH' | 'VERY HIGH';
+  maxSingleAssetWeight: number;
+  maxPortfolioExposure: number;
+  cashReserve: number;
+  stopLossPercent: number;
+  takeProfitPercent: number;
+  trailingStopPercent: number;
+  rebalanceDays: number;
+  cooldownHours: number;
+  maxDrawdownLimit: number;
+}
+
 export interface Portfolio {
   id: string;
   version: number;
   name: string;
   description: string;
+  mandate: string;
+  holdingPeriod: string;
   sleeve: 'crypto_derivatives' | 'crypto_spot' | 'us_equities' | 'fx' | 'cross_asset';
   status: PortfolioStatus;
   assets: PortfolioAsset[];
@@ -122,11 +138,14 @@ export interface Portfolio {
   paperAccount?: PaperAccount;
   aiCommentary?: AICommentary;
   universeLabel: string;
+  riskPolicy: PortfolioRiskPolicy;
+  executionReady: boolean;
 }
 
 export interface PortfolioMetrics {
   cumulativeReturn: number | null;
   annualizedReturn: number | null;
+  cagr: number | null;
   dailyReturn: number | null;
   realizedVolatility: number | null;
   downsideVolatility: number | null;
@@ -137,6 +156,12 @@ export interface PortfolioMetrics {
   sharpeRatio: number | null;
   sortinoRatio: number | null;
   calmarRatio: number | null;
+  omegaRatio: number | null;
+  ulcerIndex: number | null;
+  recoveryFactor: number | null;
+  positiveDayRate: number | null;
+  bestDay: number | null;
+  worstDay: number | null;
   avgPairwiseCorrelation: number | null;
   concentration: number | null;
   diversificationScore: number | null;
