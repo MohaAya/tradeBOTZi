@@ -217,7 +217,8 @@ function buildRiskPolicy(letter: string, metrics: PortfolioMetrics): PortfolioRi
     D: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.90, cashReserve: 0.10, stopLossPercent: 8, takeProfitPercent: 15, trailingStopPercent: 6, rebalanceDays: 3, cooldownHours: 12, maxDrawdownLimit: 0.25 },
     E: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.75, cashReserve: 0.25, stopLossPercent: 7, takeProfitPercent: 12, trailingStopPercent: 5, rebalanceDays: 14, cooldownHours: 48, maxDrawdownLimit: 0.20 },
   };
-  const riskScore = calculatePortfolioRiskScore(metrics);
+  const mandateFloor: Record<string, number> = { A: 7.0, B: 4.5, C: 4.0, D: 4.5, E: 2.5 };
+  const riskScore = Number(Math.max(calculatePortfolioRiskScore(metrics), mandateFloor[letter] || 4).toFixed(1));
   return {
     riskScore,
     riskBand: riskBand(riskScore),
@@ -396,9 +397,9 @@ export function generatePortfolios(observations: MarketObservation[], historical
     .slice(0, Math.min(5, symbolsWithData.length))
     .map(item => item.symbol);
   portfolios.push(createPortfolio(
-    'A', 'Growth & Momentum',
-    'Higher-risk growth sleeve selected by measured momentum, then weighted by inverse volatility.',
-    'Seek upside from liquid assets with strong recent risk-adjusted momentum.',
+    'A', 'Aggressive Growth & Momentum',
+    'High-risk growth sleeve selected by measured momentum, then weighted by inverse volatility.',
+    'Seek upside from liquid risk assets with strong recent risk-adjusted momentum while accepting materially higher drawdown risk.',
     '2–8 weeks', 'crypto_derivatives', momentumAssets, historicalData, observations, universeLabel, now
   ));
 
