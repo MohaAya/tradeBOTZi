@@ -7,13 +7,48 @@ export function createAgentDesk(deps) {
   const providerModel = deps.providerModel;
   const extractProviderContent = deps.extractProviderContent;
 
-  const events = [];
+  const agentStateFile = process.env.AGENT_STATE_FILE || "/opt/tradebotzi/data/agent-state.json";
+  let events = [];
   const jobs = new Map();
   let latestScreenshot = null;
   let browserProcess = null;
 
   const paperFile = process.env.PAPER_STATE_FILE || "/opt/tradebotzi/data/paper-state.json";
   fs.mkdirSync("/opt/tradebotzi/data", { recursive: true });
+
+  try {
+    const loadedAgentState = JSON.parse(fs.readFileSync(agentStateFile, "utf8"));
+    events = Array.isArray(loadedAgentState.events) ? loadedAgentState.events.slice(-1000) : [];
+    for (const entry of Array.isArray(loadedAgentState.jobs) ? loadedAgentState.jobs : []) {
+      if (!Array.isArray(entry) || entry.length !== 2) continue;
+      const job = entry[1] || {};
+      if (job.status === "running" || job.status === "pending") {
+        job.status = "error";
+        job.finishedAt = Date.now();
+        job.error = "Server restarted before this job completed";
+      }
+      jobs.set(entry[0], job);
+    }
+  } catch {}
+
+  function saveAgentState() {
+    const payload = {
+      events: events.slice(-1000),
+      jobs: Array.from(jobs.entries())
+        .sort(function (a, b) { return Number(b[1].createdAt || 0) - Number(a[1].createdAt || 0); })
+        .slice(0, 200)
+    };
+    const temp = agentStateFile + ".tmp";
+    fs.writeFileSync(temp, JSON.stringify(payload, null, 2));
+    fs.renameSync(temp, agentStateFile);
+  }
+
+  function setJob(jobId, value) {
+    jobs.set(jobId, value);
+    saveAgentState();
+    return value;
+  }
+
   let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [] };
   try {
     const loaded = JSON.parse(fs.readFileSync(paperFile, "utf8"));
@@ -73,7 +108,8 @@ export function createAgentDesk(deps) {
       message: message
     }, extra || {});
     events.push(event);
-    if (events.length > 400) events.splice(0, events.length - 400);
+    if (events.length > 1000) events.splice(0, events.length - 1000);
+    saveAgentState();
     return event;
   }
 
@@ -574,7 +610,7 @@ export function createAgentDesk(deps) {
       ? request.agents
       : defaultAssignments();
 
-    jobs.set(jobId, {
+    setJob(jobId, {
       status: "running",
       command: command,
       createdAt: Date.now(),
@@ -605,12 +641,6 @@ export function createAgentDesk(deps) {
     const agentResults = await Promise.all(assignments.map(async function (assignment) {
       const provider = String(assignment.provider || "");
       const role = String(assignment.role || "Research Agent");
-      pushEvent("agent_start", role + " started using " + provider, {
-        jobId: jobId,
-        provider: provider,
-        role: role
-      });
-
       const messages = [
         {
           role: "system",
@@ -637,6 +667,14 @@ export function createAgentDesk(deps) {
       for (const candidate of uniqueCandidates) {
         try {
           const started = Date.now();
+          pushEvent("provider_request", role + " sent a request to " + candidate + " / " + providerModel(candidate), {
+            jobId: jobId,
+            provider: candidate,
+            preferredProvider: provider,
+            role: role,
+            model: providerModel(candidate),
+            requestStartedAt: started
+          });
           const response = await callProvider(candidate, messages);
           const latencyMs = Date.now() - started;
           const content = extractProviderContent(candidate, response);
@@ -660,8 +698,8 @@ export function createAgentDesk(deps) {
             ok: true
           };
           pushEvent(
-            "agent_complete",
-            role + " completed analysis with " + candidate + (fallbackUsed ? " (fallback from " + provider + ")" : ""),
+            "provider_response",
+            role + " received a valid response from " + candidate + " / " + providerModel(candidate) + " in " + latencyMs + " ms" + (fallbackUsed ? " (fallback from " + provider + ")" : ""),
             {
               jobId: jobId,
               provider: candidate,
@@ -674,7 +712,7 @@ export function createAgentDesk(deps) {
           return result;
         } catch (error) {
           attempts.push({ provider: candidate, ok: false, error: String(error) });
-          pushEvent("agent_fallback", role + " could not use " + candidate + ": " + String(error), {
+          pushEvent("provider_failure", role + " request to " + candidate + " failed: " + String(error), {
             jobId: jobId,
             provider: candidate,
             preferredProvider: provider,
@@ -693,7 +731,7 @@ export function createAgentDesk(deps) {
           return attempt.provider + ": " + attempt.error;
         }).join(" | ")
       };
-      pushEvent("agent_error", role + " exhausted its AI providers", {
+      pushEvent("provider_exhausted", role + " exhausted its configured AI providers", {
         jobId: jobId,
         provider: provider,
         role: role
@@ -739,7 +777,7 @@ export function createAgentDesk(deps) {
       proChart: proChart,
       paperExecution: paperExecution
     };
-    jobs.set(jobId, completed);
+    setJob(jobId, completed);
     pushEvent("job_complete", "Agent command completed", { jobId: jobId });
     return completed;
   }
@@ -783,13 +821,13 @@ export function createAgentDesk(deps) {
         return true;
       }
       const jobId = "agent-" + Date.now() + "-" + Math.random().toString(36).slice(2, 9);
-      jobs.set(jobId, {
+      setJob(jobId, {
         status: "pending",
         command: command,
         createdAt: Date.now()
       });
       runCommand(jobId, body).catch(function (error) {
-        jobs.set(jobId, {
+        setJob(jobId, {
           status: "error",
           command: command,
           createdAt: (jobs.get(jobId) && jobs.get(jobId).createdAt) || Date.now(),
@@ -804,6 +842,16 @@ export function createAgentDesk(deps) {
         jobId: jobId,
         paperOnly: true
       });
+      return true;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/agents/jobs") {
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") || 20)));
+      const list = Array.from(jobs.entries())
+        .map(function (entry) { return Object.assign({ jobId: entry[0] }, entry[1]); })
+        .sort(function (a, b) { return Number(b.createdAt || 0) - Number(a.createdAt || 0); })
+        .slice(0, limit);
+      sendJson(res, 200, { ok: true, jobs: list, now: Date.now() });
       return true;
     }
 
