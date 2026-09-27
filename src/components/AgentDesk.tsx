@@ -66,6 +66,7 @@ export default function AgentDesk({
   const [running, setRunning] = useState(false);
   const [activeJob, setActiveJob] = useState<string | null>(null);
   const [browserInstalled, setBrowserInstalled] = useState(false);
+  const [supervisor, setSupervisor] = useState<any>(null);
   const lastEventAt = useRef(0);
 
   const refreshStatus = async () => {
@@ -78,6 +79,7 @@ export default function AgentDesk({
       if (statusRes.ok) {
         const data = await statusRes.json();
         setBrowserInstalled(Boolean(data.browser?.installed));
+        if (data.supervisor) setSupervisor(data.supervisor);
         if (assignments.length === 0 && Array.isArray(data.assignments)) {
           setAssignments(data.assignments.map((a: Assignment) => ({ ...a, enabled: true })));
         }
@@ -92,6 +94,7 @@ export default function AgentDesk({
         const data = await paperRes.json();
         setPaperAccounts(data.accounts || []);
         setPaperTransactions(data.transactions || []);
+        if (data.supervisor) setSupervisor(data.supervisor);
       }
     } catch {}
   };
@@ -430,7 +433,8 @@ export default function AgentDesk({
                 .filter(event => [
                   'command','provider_request','provider_response','provider_failure','provider_exhausted',
                   'prochart','error','risk_check','risk_reject','pipeline_phase','paper_order',
-                  'paper_fill','portfolio_snapshot','paper_account','job_complete'
+                  'paper_fill','paper_skip','portfolio_snapshot','paper_account','job_complete',
+                  'supervisor_cycle','supervisor_error','supervisor_drawdown','supervisor_rebalance','supervisor_cooldown'
                 ].includes(event.type))
                 .reverse().map(event => (
                 <div key={event.id} className="bg-gray-900/60 border border-gray-800 rounded-lg p-2.5">
@@ -442,6 +446,35 @@ export default function AgentDesk({
                 </div>
               ))}
             </div>
+          </div>
+
+          <div className="bg-gray-800/50 border border-emerald-500/20 rounded-xl p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Shield className="w-4 h-4 text-emerald-400" />
+                <div>
+                  <h3 className="text-white font-semibold text-sm">PAPER Portfolio Supervisor</h3>
+                  <p className="text-[10px] text-gray-500">Always-on VPS risk and rebalance loop</p>
+                </div>
+              </div>
+              <span className={'text-[10px] px-2 py-1 rounded border ' + (
+                supervisor?.enabled && !supervisor?.lastError
+                  ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300'
+                  : 'bg-red-500/10 border-red-500/20 text-red-300'
+              )}>
+                {supervisor?.enabled ? 'ACTIVE' : 'OFFLINE'}
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-3 mt-3 text-[11px]">
+              <div><span className="text-gray-500">Interval</span><p className="text-gray-200">{supervisor?.intervalMs ? Math.round(supervisor.intervalMs / 1000) + 's' : '—'}</p></div>
+              <div><span className="text-gray-500">Active accounts</span><p className="text-gray-200">{supervisor?.accountCount ?? '—'}</p></div>
+              <div><span className="text-gray-500">Last success</span><p className="text-gray-200">{supervisor?.lastSuccessAt ? new Date(supervisor.lastSuccessAt).toLocaleTimeString() : '—'}</p></div>
+              <div><span className="text-gray-500">Total actions</span><p className="text-gray-200">{supervisor?.totalActions ?? 0}</p></div>
+            </div>
+            <p className="text-gray-500 text-[10px] mt-3">
+              Marks positions to market and can execute simulated stop-loss, take-profit, trailing-stop, drawdown risk-off, cooldown and scheduled rebalance actions.
+            </p>
+            {supervisor?.lastError && <p className="text-red-300 text-[10px] mt-2">{supervisor.lastError}</p>}
           </div>
 
           <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
