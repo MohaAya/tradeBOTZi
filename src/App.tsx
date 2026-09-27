@@ -17,7 +17,7 @@ import { compareAcrossVenues } from './lib/providers';
 // ============================================================
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'agents', label: 'Trading Agents', icon: Users },
+  { id: 'agents', label: 'Strategy Profiles', icon: Users },
   { id: 'agent-desk', label: 'Agent Desk', icon: Brain },
   { id: 'prochart', label: 'ProChart', icon: Globe },
   { id: 'portfolio-builder', label: 'Portfolio Builder', icon: Layers },
@@ -69,6 +69,7 @@ function Sidebar({ activeTab, onTabChange }: { activeTab: string; onTabChange: (
 import Dashboard from './components/Dashboard';
 import AgentDesk from './components/AgentDesk';
 import ProChartDesk from './components/ProChartDesk';
+import TaskCenter from './components/TaskCenter';
 
 // ============================================================
 // AGENTS PANEL
@@ -105,8 +106,8 @@ function AgentsPanel({ store }: { store: AppStore }) {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-white">Trading Agents</h2>
-          <p className="text-gray-400 text-sm mt-1">Persistent agent state — survives page refresh</p>
+          <h2 className="text-2xl font-bold text-white">Strategy Profiles</h2>
+          <p className="text-gray-400 text-sm mt-1">Saved local configuration only. These cards are not autonomous VPS processes; actual AI work appears under Server Tasks and Agent Desk.</p>
         </div>
         <button onClick={() => setShowCreate(!showCreate)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
           <Zap className="w-4 h-4" />Create Agent
@@ -182,6 +183,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
   const [analysisResults, setAnalysisResults] = useState<any[]>([]);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [activeAnalysisJob, setActiveAnalysisJob] = useState<string | null>(null);
   const [paperStatus, setPaperStatus] = useState<string | null>(null);
 
   useEffect(() => {
@@ -218,6 +220,48 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
     }
     throw new Error('Portfolio intelligence timed out');
   };
+
+  useEffect(() => {
+    if (!selectedPortfolio) return;
+    const jobId = localStorage.getItem('tradebotzi:portfolio-job:' + selectedPortfolio.id);
+    if (!jobId) return;
+    let cancelled = false;
+
+    const restore = async () => {
+      try {
+        const res = await fetch('/api/agents/jobs/' + encodeURIComponent(jobId), { cache: 'no-store' });
+        const data = await res.json();
+        if (!res.ok || !data.ok || cancelled) return;
+        if (data.status === 'done') {
+          setAnalysisResults(data.results || []);
+          setAnalysisLoading(false);
+          setActiveAnalysisJob(null);
+          return;
+        }
+        if (data.status === 'error') {
+          setAnalysisError(data.error || 'Server task failed');
+          setAnalysisLoading(false);
+          setActiveAnalysisJob(null);
+          return;
+        }
+        setActiveAnalysisJob(jobId);
+        setAnalysisLoading(true);
+        const completed = await pollAgentJob(jobId);
+        if (!cancelled) {
+          setAnalysisResults(completed.results || []);
+          setAnalysisLoading(false);
+          setActiveAnalysisJob(null);
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setAnalysisError(e.message || 'Could not restore server task');
+          setAnalysisLoading(false);
+        }
+      }
+    };
+    restore();
+    return () => { cancelled = true; };
+  }, [selectedPortfolio?.id]);
 
   const runPortfolioCouncil = async (mode: 'full' | 'simple' | 'challenge' = 'full') => {
     if (!selectedPortfolio || analysisLoading) return;
@@ -257,8 +301,11 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
       });
       const submitted = await res.json();
       if (!res.ok || !submitted.ok) throw new Error(submitted.error || 'Could not start AI council');
+      setActiveAnalysisJob(submitted.jobId);
+      localStorage.setItem('tradebotzi:portfolio-job:' + selectedPortfolio.id, submitted.jobId);
       const result = await pollAgentJob(submitted.jobId);
       setAnalysisResults(result.results || []);
+      setActiveAnalysisJob(null);
     } catch (e: any) {
       setAnalysisError(e.message || 'Portfolio intelligence failed');
     } finally {
@@ -526,7 +573,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
                   <p className="text-gray-400 text-xs">Multiple available AIs receive the same calculated portfolio state with different roles.</p>
                 </div>
               </div>
-              {analysisLoading && <div className="flex items-center gap-2 text-xs text-violet-300"><Loader2 className="w-4 h-4 animate-spin" /> Council working...</div>}
+              {analysisLoading && <div className="flex items-center gap-2 text-xs text-violet-300"><Loader2 className="w-4 h-4 animate-spin" /> Server task active{activeAnalysisJob ? ' · ' + activeAnalysisJob.slice(-8) : ''}. You may switch tabs.</div>}
             </div>
 
             <div className="p-5">
@@ -572,10 +619,15 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
                     <div className="flex items-center justify-between gap-2 mb-2">
                       <div>
                         <p className="text-white text-sm font-medium">{result.role || 'Agent'}</p>
-                        <p className="text-gray-600 text-[10px]">{result.provider} · {result.model || 'provider model'}{result.latencyMs ? ` · ${result.latencyMs} ms` : ''}</p>
+                        <p className="text-gray-600 text-[10px]">preferred {result.preferredProvider || result.provider} · actual {result.provider} · {result.model || 'provider model'}{result.latencyMs ? ` · ${result.latencyMs} ms` : ''}</p>
                       </div>
                       <span className={`text-[10px] ${result.ok ? 'text-emerald-400' : 'text-red-400'}`}>{result.ok ? 'COMPLETE' : 'FAILED'}</span>
                     </div>
+                    {Array.isArray(result.attempts) && result.attempts.length > 0 && (
+                      <p className="text-gray-600 text-[10px] mb-2">
+                        {result.attempts.map((attempt: any) => attempt.provider + ': ' + (attempt.ok ? 'response received' : 'failed')).join(' · ')}
+                      </p>
+                    )}
                     <p className="text-gray-300 text-xs whitespace-pre-wrap leading-relaxed">
                       {result.ok ? result.content : (result.error || 'Provider failed')}
                     </p>
@@ -1439,6 +1491,7 @@ export default function App() {
             </div>
           </div>
         </div>
+        <TaskCenter />
         {renderContent()}
       </main>
     </div>
