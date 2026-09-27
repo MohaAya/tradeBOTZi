@@ -10,7 +10,7 @@
 import type { 
   Portfolio, PortfolioMetrics, PortfolioAsset, ScoreBreakdown, 
   RankingRun, RankingResult, RankingConfig, OHLCVBar, MarketObservation,
-  DataFreshness, RankingLabel 
+  DataFreshness, RankingLabel, PortfolioRiskPolicy
 } from '../types';
 
 export function calculateReturns(prices: number[]): number[] {
@@ -24,7 +24,7 @@ export function calculateVolatility(returns: number[]): number {
   if (returns.length < 2) return 0;
   const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
   const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length - 1);
-  return Math.sqrt(variance) * Math.sqrt(252);
+  return Math.sqrt(variance) * Math.sqrt(365);
 }
 
 export function calculateDownsideVolatility(returns: number[]): number {
@@ -32,7 +32,7 @@ export function calculateDownsideVolatility(returns: number[]): number {
   const downsideReturns = returns.map(r => Math.min(r, 0));
   const mean = downsideReturns.reduce((s, r) => s + r, 0) / downsideReturns.length;
   const variance = downsideReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / (downsideReturns.length - 1);
-  return Math.sqrt(variance) * Math.sqrt(252);
+  return Math.sqrt(variance) * Math.sqrt(365);
 }
 
 export function calculateMaxDrawdown(prices: number[]): number {
@@ -57,7 +57,7 @@ export function calculateCurrentDrawdown(prices: number[]): number {
 export function calculateSharpeRatio(returns: number[]): number {
   if (returns.length < 2) return 0;
   const meanReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const annualizedReturn = meanReturn * 252;
+  const annualizedReturn = meanReturn * 365;
   const vol = calculateVolatility(returns);
   if (vol === 0) return 0;
   return annualizedReturn / vol;
@@ -66,7 +66,7 @@ export function calculateSharpeRatio(returns: number[]): number {
 export function calculateSortinoRatio(returns: number[]): number {
   if (returns.length < 2) return 0;
   const meanReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const annualizedReturn = meanReturn * 252;
+  const annualizedReturn = meanReturn * 365;
   const downVol = calculateDownsideVolatility(returns);
   if (downVol === 0) return 0;
   return annualizedReturn / downVol;
@@ -75,7 +75,7 @@ export function calculateSortinoRatio(returns: number[]): number {
 export function calculateCalmarRatio(returns: number[], prices: number[]): number {
   if (returns.length < 2) return 0;
   const meanReturn = returns.reduce((s, r) => s + r, 0) / returns.length;
-  const annualizedReturn = meanReturn * 252;
+  const annualizedReturn = meanReturn * 365;
   const maxDD = Math.abs(calculateMaxDrawdown(prices));
   if (maxDD === 0) return 0;
   return annualizedReturn / maxDD;
@@ -135,6 +135,128 @@ export function calculateMomentumScore(returns: number[]): number {
   return Math.max(0, Math.min(10, 5 + signal * 10));
 }
 
+
+function quantile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * Math.max(0, Math.min(1, q));
+  const base = Math.floor(pos);
+  const rest = pos - base;
+  return sorted[base + 1] !== undefined
+    ? sorted[base] + rest * (sorted[base + 1] - sorted[base])
+    : sorted[base];
+}
+
+export function calculateHistoricalVaR(returns: number[], confidence: number = 0.95): number {
+  if (returns.length < 10) return 0;
+  return quantile(returns, 1 - confidence);
+}
+
+export function calculateHistoricalCVaR(returns: number[], confidence: number = 0.95): number {
+  if (returns.length < 10) return 0;
+  const valueAtRisk = calculateHistoricalVaR(returns, confidence);
+  const tail = returns.filter(r => r <= valueAtRisk);
+  return tail.length ? tail.reduce((sum, r) => sum + r, 0) / tail.length : valueAtRisk;
+}
+
+export function calculateOmegaRatio(returns: number[], threshold: number = 0): number {
+  if (returns.length === 0) return 0;
+  const gains = returns.reduce((sum, r) => sum + Math.max(r - threshold, 0), 0);
+  const losses = returns.reduce((sum, r) => sum + Math.max(threshold - r, 0), 0);
+  if (losses === 0) return gains > 0 ? 99 : 0;
+  return gains / losses;
+}
+
+export function calculateUlcerIndex(prices: number[]): number {
+  if (prices.length < 2) return 0;
+  let peak = prices[0];
+  const squaredDrawdowns: number[] = [];
+  for (const price of prices) {
+    peak = Math.max(peak, price);
+    const drawdown = peak > 0 ? (price - peak) / peak : 0;
+    squaredDrawdowns.push(drawdown * drawdown);
+  }
+  return Math.sqrt(squaredDrawdowns.reduce((sum, x) => sum + x, 0) / squaredDrawdowns.length);
+}
+
+export function calculateRecoveryFactor(prices: number[]): number {
+  if (prices.length < 2) return 0;
+  const totalReturn = calculateCumulativeReturn(prices);
+  const maxDrawdown = Math.abs(calculateMaxDrawdown(prices));
+  if (maxDrawdown === 0) return totalReturn > 0 ? 99 : 0;
+  return totalReturn / maxDrawdown;
+}
+
+export function calculateCAGR(prices: number[], periods: number): number {
+  if (prices.length < 2 || periods <= 0 || prices[0] <= 0 || prices[prices.length - 1] <= 0) return 0;
+  return Math.pow(prices[prices.length - 1] / prices[0], 365 / periods) - 1;
+}
+
+function calculatePortfolioRiskScore(metrics: PortfolioMetrics): number {
+  const vol = Math.min(1, Math.max(0, (metrics.realizedVolatility || 0) / 1.0));
+  const drawdown = Math.min(1, Math.abs(metrics.maxDrawdown || 0) / 0.60);
+  const tail = Math.min(1, Math.abs(metrics.cvar95 || 0) / 0.12);
+  const concentration = Math.min(1, Math.max(0, ((metrics.concentration || 0) - 0.18) / 0.25));
+  const correlation = Math.min(1, Math.max(0, ((metrics.avgPairwiseCorrelation || 0) + 0.2) / 1.2));
+  const raw = 1 + (vol * 2.6) + (drawdown * 2.4) + (tail * 1.8) + (concentration * 1.1) + (correlation * 1.1);
+  return Math.max(1, Math.min(10, Number(raw.toFixed(1))));
+}
+
+function riskBand(score: number): PortfolioRiskPolicy['riskBand'] {
+  if (score <= 3) return 'LOW';
+  if (score <= 5) return 'MODERATE';
+  if (score <= 7) return 'HIGH';
+  return 'VERY HIGH';
+}
+
+function buildRiskPolicy(letter: string, metrics: PortfolioMetrics): PortfolioRiskPolicy {
+  const presets: Record<string, Omit<PortfolioRiskPolicy, 'riskScore' | 'riskBand'>> = {
+    A: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.95, cashReserve: 0.05, stopLossPercent: 12, takeProfitPercent: 25, trailingStopPercent: 10, rebalanceDays: 3, cooldownHours: 12, maxDrawdownLimit: 0.35 },
+    B: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.90, cashReserve: 0.10, stopLossPercent: 10, takeProfitPercent: 20, trailingStopPercent: 8, rebalanceDays: 7, cooldownHours: 24, maxDrawdownLimit: 0.30 },
+    C: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.85, cashReserve: 0.15, stopLossPercent: 9, takeProfitPercent: 18, trailingStopPercent: 7, rebalanceDays: 7, cooldownHours: 24, maxDrawdownLimit: 0.25 },
+    D: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.90, cashReserve: 0.10, stopLossPercent: 8, takeProfitPercent: 15, trailingStopPercent: 6, rebalanceDays: 3, cooldownHours: 12, maxDrawdownLimit: 0.25 },
+    E: { maxSingleAssetWeight: 0.35, maxPortfolioExposure: 0.75, cashReserve: 0.25, stopLossPercent: 7, takeProfitPercent: 12, trailingStopPercent: 5, rebalanceDays: 14, cooldownHours: 48, maxDrawdownLimit: 0.20 },
+  };
+  const riskScore = calculatePortfolioRiskScore(metrics);
+  return {
+    riskScore,
+    riskBand: riskBand(riskScore),
+    ...(presets[letter] || presets.B),
+  };
+}
+
+function alignedSymbolReturns(symbol: string, historicalData: Map<string, OHLCVBar[]>): number[] {
+  const prices = (historicalData.get(symbol) || []).map(b => b.close);
+  return calculateReturns(prices);
+}
+
+function selectLowCorrelationAssets(symbols: string[], historicalData: Map<string, OHLCVBar[]>, count: number): string[] {
+  if (symbols.length <= count) return [...symbols];
+  const returns = new Map(symbols.map(symbol => [symbol, alignedSymbolReturns(symbol, historicalData)]));
+  const avgAbsCorr = (symbol: string, peers: string[]) => {
+    if (peers.length === 0) return 0;
+    const base = returns.get(symbol) || [];
+    return peers.reduce((sum, peer) => sum + Math.abs(pearsonCorrelation(base, returns.get(peer) || [])), 0) / peers.length;
+  };
+
+  const first = [...symbols]
+    .map(symbol => ({ symbol, corr: avgAbsCorr(symbol, symbols.filter(s => s !== symbol)) }))
+    .sort((a, b) => a.corr - b.corr)[0]?.symbol;
+  if (!first) return symbols.slice(0, count);
+
+  const selected = [first];
+  while (selected.length < count) {
+    const remaining = symbols.filter(symbol => !selected.includes(symbol));
+    if (!remaining.length) break;
+    const next = remaining
+      .map(symbol => ({ symbol, corr: avgAbsCorr(symbol, selected) }))
+      .sort((a, b) => a.corr - b.corr)[0]?.symbol;
+    if (!next) break;
+    selected.push(next);
+  }
+  return selected;
+}
+
 export function calculatePortfolioMetrics(
   historicalData: Map<string, OHLCVBar[]>,
   weights: Map<string, number>,
@@ -151,7 +273,7 @@ export function calculatePortfolioMetrics(
     returnsMatrix.push(returns);
   }
 
-  const minLen = Math.min(...returnsMatrix.map(r => r.length));
+  const minLen = returnsMatrix.length ? Math.min(...returnsMatrix.map(r => r.length)) : 0;
   if (minLen > 0) {
     for (let t = 0; t < minLen; t++) {
       let portReturn = 0;
@@ -187,26 +309,52 @@ export function calculatePortfolioMetrics(
   if (cumRet > 0.1) trendRegime = 'bull';
   else if (cumRet < -0.1) trendRegime = 'bear';
 
+  let weightedSpreadCost = 0;
+  let weightedLiquidity = 0;
+  for (const symbol of symbols) {
+    const weight = weights.get(symbol) || 0;
+    const candidates = observations
+      .filter(obs => obs.canonicalSymbol === symbol && obs.price && obs.price > 0)
+      .sort((a, b) => (b.volume24h || 0) - (a.volume24h || 0));
+    const obs = candidates[0];
+    if (!obs) continue;
+    const spreadPct = obs.spread !== null && obs.price ? Math.max(0, obs.spread / obs.price) : 0;
+    weightedSpreadCost += weight * spreadPct;
+    const volume = Math.max(1, obs.volume24h || 0);
+    const liquidityComponent = Math.max(0, Math.min(10, (Math.log10(volume) - 5) * 2));
+    weightedLiquidity += weight * liquidityComponent;
+  }
+
+  const maxDrawdown = calculateMaxDrawdown(portfolioPrices);
+  const cumulativeReturn = calculateCumulativeReturn(portfolioPrices);
+
   return {
-    cumulativeReturn: calculateCumulativeReturn(portfolioPrices),
-    annualizedReturn: portfolioReturns.length > 0 ? (portfolioReturns.reduce((s, r) => s + r, 0) / portfolioReturns.length) * 252 : null,
+    cumulativeReturn,
+    annualizedReturn: portfolioReturns.length > 0 ? (portfolioReturns.reduce((s, r) => s + r, 0) / portfolioReturns.length) * 365 : null,
+    cagr: portfolioReturns.length > 0 ? calculateCAGR(portfolioPrices, portfolioReturns.length) : null,
     dailyReturn: portfolioReturns.length > 0 ? portfolioReturns[portfolioReturns.length - 1] : null,
     realizedVolatility: vol,
     downsideVolatility: calculateDownsideVolatility(portfolioReturns),
-    maxDrawdown: calculateMaxDrawdown(portfolioPrices),
+    maxDrawdown,
     currentDrawdown: calculateCurrentDrawdown(portfolioPrices),
-    var95: null,
-    cvar95: null,
+    var95: portfolioReturns.length >= 10 ? calculateHistoricalVaR(portfolioReturns, 0.95) : null,
+    cvar95: portfolioReturns.length >= 10 ? calculateHistoricalCVaR(portfolioReturns, 0.95) : null,
     sharpeRatio: calculateSharpeRatio(portfolioReturns),
     sortinoRatio: calculateSortinoRatio(portfolioReturns),
     calmarRatio: calculateCalmarRatio(portfolioReturns, portfolioPrices),
+    omegaRatio: portfolioReturns.length ? calculateOmegaRatio(portfolioReturns) : null,
+    ulcerIndex: portfolioPrices.length > 1 ? calculateUlcerIndex(portfolioPrices) : null,
+    recoveryFactor: portfolioPrices.length > 1 ? calculateRecoveryFactor(portfolioPrices) : null,
+    positiveDayRate: portfolioReturns.length ? portfolioReturns.filter(r => r > 0).length / portfolioReturns.length : null,
+    bestDay: portfolioReturns.length ? Math.max(...portfolioReturns) : null,
+    worstDay: portfolioReturns.length ? Math.min(...portfolioReturns) : null,
     avgPairwiseCorrelation: calculateAvgCorrelation(returnsMatrix),
     concentration: calculateConcentration(Array.from(weights.values())),
     diversificationScore: Math.max(0, 1 - calculateConcentration(Array.from(weights.values()))),
     effectivePositions: calculateEffectivePositions(Array.from(weights.values())),
-    estimatedSpreadCost: null,
-    estimatedFees: null,
-    liquidityScore: Math.min(10, symbols.length * 2),
+    estimatedSpreadCost: weightedSpreadCost,
+    estimatedFees: 0.002,
+    liquidityScore: weightedLiquidity,
     momentumScore: calculateMomentumScore(portfolioReturns),
     volatilityRegime: volRegime,
     trendRegime: trendRegime,
@@ -242,20 +390,44 @@ export function generatePortfolios(observations: MarketObservation[], historical
   const hasOnlyCrypto = topAssets.every(a => a.assetClass === 'crypto');
   const universeLabel = hasOnlyCrypto ? 'CRYPTO-ONLY UNIVERSE' : 'MULTI-ASSET UNIVERSE';
 
-  const momentumAssets = symbolsWithData.slice(0, Math.min(5, symbolsWithData.length));
-  portfolios.push(createPortfolio('A', 'Momentum Leaders', 'Top momentum crypto assets with inverse-volatility weighting', 'crypto_derivatives', momentumAssets, historicalData, observations, universeLabel, now));
+  const momentumAssets = [...symbolsWithData]
+    .map(symbol => ({ symbol, score: calculateMomentumScore(alignedSymbolReturns(symbol, historicalData)) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.min(5, symbolsWithData.length))
+    .map(item => item.symbol);
+  portfolios.push(createPortfolio(
+    'A', 'Growth & Momentum',
+    'Higher-risk growth sleeve selected by measured momentum, then weighted by inverse volatility.',
+    'Seek upside from liquid assets with strong recent risk-adjusted momentum.',
+    '2–8 weeks', 'crypto_derivatives', momentumAssets, historicalData, observations, universeLabel, now
+  ));
 
   const largeCaps = symbolsWithData.slice(0, Math.min(6, symbolsWithData.length));
-  portfolios.push(createPortfolio('B', 'Large Cap Diversified', 'Diversified large-cap crypto with equal-risk contribution', 'crypto_spot', largeCaps, historicalData, observations, universeLabel, now));
+  portfolios.push(createPortfolio(
+    'B', 'Core Diversified',
+    'Large, liquid crypto assets with volatility-aware weights and a broader diversification mandate.',
+    'Provide a core crypto allocation with less concentration than the growth sleeve.',
+    '1–3 months', 'crypto_spot', largeCaps, historicalData, observations, universeLabel, now
+  ));
 
-  const lowCorrAssets = symbolsWithData.slice(Math.max(0, symbolsWithData.length - 5), symbolsWithData.length);
-  if (lowCorrAssets.length >= 3) portfolios.push(createPortfolio('C', 'Low Correlation', 'Assets selected for low pairwise correlation', 'crypto_spot', lowCorrAssets, historicalData, observations, universeLabel, now));
+  const lowCorrAssets = selectLowCorrelationAssets(symbolsWithData.slice(0, 15), historicalData, Math.min(5, symbolsWithData.length));
+  if (lowCorrAssets.length >= 3) portfolios.push(createPortfolio(
+    'C', 'Low-Correlation Diversifier',
+    'Greedy low-correlation selection designed to reduce overlap between asset return streams.',
+    'Reduce portfolio co-movement and concentration risk.',
+    '1–3 months', 'crypto_spot', lowCorrAssets, historicalData, observations, universeLabel, now
+  ));
 
   const liquidAssets = topAssets
     .filter(a => symbolsWithData.includes(a.canonicalSymbol))
     .slice(0, Math.min(4, symbolsWithData.length))
     .map(a => a.canonicalSymbol);
-  portfolios.push(createPortfolio('D', 'High Liquidity', 'Most liquid assets for minimal slippage', 'crypto_spot', liquidAssets, historicalData, observations, universeLabel, now));
+  portfolios.push(createPortfolio(
+    'D', 'Liquidity First',
+    'Concentrates on the most liquid eligible assets to reduce execution friction and slippage.',
+    'Prioritize tradability and execution quality while keeping diversified weights.',
+    '2–6 weeks', 'crypto_spot', liquidAssets, historicalData, observations, universeLabel, now
+  ));
 
   const volMap = new Map<string, number>();
   for (const sym of symbolsWithData) {
@@ -264,7 +436,12 @@ export function generatePortfolios(observations: MarketObservation[], historical
     volMap.set(sym, calculateVolatility(calculateReturns(prices)));
   }
   const lowVolAssets = [...volMap.entries()].sort((a, b) => a[1] - b[1]).slice(0, Math.min(5, symbolsWithData.length)).map(([sym]) => sym);
-  portfolios.push(createPortfolio('E', 'Low Volatility', 'Lowest volatility assets for capital preservation', 'crypto_spot', lowVolAssets, historicalData, observations, universeLabel, now));
+  portfolios.push(createPortfolio(
+    'E', 'Capital Defense',
+    'Selects the lowest-volatility eligible assets and uses the largest cash reserve policy.',
+    'Reduce volatility and drawdown pressure while retaining market participation.',
+    '1–3 months', 'crypto_spot', lowVolAssets, historicalData, observations, universeLabel, now
+  ));
 
   return portfolios;
 }
@@ -317,6 +494,8 @@ function createPortfolio(
   letter: string,
   name: string,
   description: string,
+  mandate: string,
+  holdingPeriod: string,
   sleeve: Portfolio['sleeve'],
   symbols: string[],
   historicalData: Map<string, OHLCVBar[]>,
@@ -349,12 +528,21 @@ function createPortfolio(
 
   const weightMap = new Map(symbols.map((s, i) => [s, normalizedWeights[i]]));
   const metrics = calculatePortfolioMetrics(historicalData, weightMap, observations);
+  const riskPolicy = buildRiskPolicy(letter, metrics);
+  const maxWeight = Math.max(...normalizedWeights);
+  const executionReady =
+    metrics.dataFreshness !== 'STALE' &&
+    metrics.dataFreshness !== 'DISCONNECTED' &&
+    metrics.observationCount >= 30 &&
+    maxWeight <= riskPolicy.maxSingleAssetWeight + 1e-9;
 
   return {
     id: `P${letter}`,
     version: 1,
     name,
     description,
+    mandate,
+    holdingPeriod,
     sleeve,
     status: 'evaluated',
     assets,
@@ -368,6 +556,8 @@ function createPortfolio(
     rankingLabel: null,
     priorRank: null,
     universeLabel,
+    riskPolicy,
+    executionReady,
   };
 }
 
@@ -461,8 +651,8 @@ export function rankPortfolios(portfolios: Portfolio[], config: RankingConfig = 
     const liqScore = normalize(m.liquidityScore, minLiq, maxLiq, true) * config.weights.liquidity;
     const divScore = normalize(m.diversificationScore, minDiv, maxDiv, true) * config.weights.diversification;
     const momScore = normalize(m.momentumScore, minMom, maxMom, true) * config.weights.momentumRegime;
-    const histScore = (m.observationCount / 90) * config.weights.historicalRobustness;
-    const fundingScore = 0.5 * config.weights.fundingCarry;
+    const histScore = Math.min(1, m.observationCount / 90) * config.weights.historicalRobustness;
+    const fundingScore = m.avgFundingRate === null ? 0 : normalize(m.avgFundingRate, -0.001, 0.001, true) * config.weights.fundingCarry;
     const dataScore = (m.dataFreshness === 'LIVE' ? 1 : m.dataFreshness === 'DELAYED' ? 0.5 : 0) * config.weights.dataQuality;
     const total = riskAdjScore + ddScore + volScore + liqScore + divScore + momScore + histScore + fundingScore + dataScore;
 
