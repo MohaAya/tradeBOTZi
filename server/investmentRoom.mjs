@@ -507,7 +507,10 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       const content=result?.data?.choices?.[0]?.message?.content||"";
       const parsed=parseJsonObject(content);
       const symbols=[...new Set((parsed?.symbols||[]).map(s=>String(s).toUpperCase()))].filter(s=>allowed.includes(s));
-      if(result?.ok&&symbols.length) return {symbols,reason:String(parsed.reason||"AI news scout selected assets from current evidence.").slice(0,500)};
+      if(result?.ok&&symbols.length) return {
+        symbols,
+        reason:"News scout selected "+symbols.join(", ")+" from the current evidence set. Review the Evidence Rooms for the underlying headlines, macro context and prediction-market inputs before running the trading council."
+      };
     }catch{}
 
     const text=evidenceItems.map(x=>x.text.toLowerCase()).join(" ");
