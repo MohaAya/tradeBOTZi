@@ -21,6 +21,17 @@ import BrokerChart from './BrokerChart';
 
 const leverageOptions = [1, 2, 3, 5, 10];
 
+const providerLabels: Record<string, string> = {
+  nvidia: 'Nemotron 3.5 Lightning',
+  'nvidia-ultra': 'Nemotron 3 Ultra',
+  'nvidia-critic': 'GPT-OSS 20B',
+  'nvidia-gemma': 'Gemma 4 31B',
+  omniroute: 'OmniRoute',
+  hermes: 'Hermes',
+  freellm: 'FreeLLM',
+  ollama: 'Ollama',
+};
+
 function money(value: any) {
   const n = Number(value);
   return Number.isFinite(n)
@@ -381,8 +392,20 @@ export default function InvestmentRoom() {
                 'bg-gray-950/60 border-gray-800'
               )}>
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] uppercase tracking-wide text-gray-400">{msg.speaker}</span>
-                  <span className="text-[10px] text-gray-600">{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-[10px] uppercase tracking-wide text-gray-400">{msg.speaker}</span>
+                    {msg.meta?.provider && (
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-gray-900 border border-gray-700 text-cyan-300 truncate">
+                        {providerLabels[msg.meta.provider] || msg.meta.provider}
+                      </span>
+                    )}
+                    {msg.meta?.vote?.ok && Number.isFinite(Number(msg.meta.vote.confidence)) && (
+                      <span className="text-[9px] text-gray-600">
+                        {Math.round(Number(msg.meta.vote.confidence) * 100)}% conf.
+                      </span>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-gray-600 shrink-0">{new Date(msg.timestamp).toLocaleTimeString()}</span>
                 </div>
                 <p className="text-xs text-gray-300 mt-1.5">{msg.message}</p>
               </div>

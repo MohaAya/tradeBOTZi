@@ -263,18 +263,38 @@ async function ollamaChat(messages) {
 
 async function nvidiaChat(messages, model = NVIDIA_MODEL) {
   if (!NVIDIA_KEY) return { ok: false, status: 0, data: { error: "NVIDIA API key not configured" } };
+
+  let requestMessages = messages;
+  if (model === NVIDIA_GEMMA_MODEL) {
+    const system = messages.find(message => message.role === "system")?.content || "";
+    const rest = messages.filter(message => message.role !== "system");
+    requestMessages = rest.map((message, index) => index === 0 && message.role === "user"
+      ? { ...message, content: system ? `${system}\n\n${message.content}` : message.content }
+      : message);
+  }
+
+  const body = {
+    model,
+    messages: requestMessages,
+    stream: false,
+    temperature: 0.2,
+    top_p: 0.9,
+    max_tokens: 1024
+  };
+
+  if (model.startsWith("nvidia/nemotron-")) {
+    body.chat_template_kwargs = { enable_thinking: false };
+  }
+
+  const timeout = model === NVIDIA_ULTRA_MODEL ? 45000
+    : model === NVIDIA_CRITIC_MODEL ? 30000
+    : 25000;
+
   return fetchJson(`${NVIDIA_URL}/chat/completions`, {
     method: "POST",
     headers: bearerHeaders(NVIDIA_KEY),
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: false,
-      temperature: 0.2,
-      top_p: 0.9,
-      max_tokens: 2048
-    })
-  }, 60000);
+    body: JSON.stringify(body)
+  }, timeout);
 }
 
 function extractContent(provider, result) {
