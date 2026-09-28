@@ -7,7 +7,16 @@ const STRATEGY_REFRESH_MS = 10 * 60 * 1000;
 const COUNCIL_REFRESH_MS = 5 * 60 * 1000;
 const MARK_MS = 15000;
 const FEE_RATE = 0.001;
-const SYMBOLS = ["BTC","ETH","SOL"];
+const DEFAULT_CRYPTO = ["BTC","ETH","SOL","BNB","XRP","DOGE","ADA","AVAX","LINK","SUI","LTC","BCH","DOT","NEAR","APT","ATOM"];
+const EQUITY_SYMBOLS = ["NVDA","AAPL","MSFT","AMZN","META","TSLA","GOOGL","AMD","COIN","MSTR"];
+const ETF_SYMBOLS = ["SPY","QQQ","IWM","GLD","SLV","TLT","USO","XLE","XLK","XLF"];
+const STATIC_SYMBOLS = [...DEFAULT_CRYPTO,...EQUITY_SYMBOLS,...ETF_SYMBOLS];
+const STABLE_CRYPTO = new Set(["USDC","USDP","FDUSD","TUSD","DAI","USDE","PYUSD","EUR","EURC"]);
+const ASSET_META = Object.fromEntries([
+  ...DEFAULT_CRYPTO.map(symbol=>[symbol,{symbol,label:symbol,market:"crypto",assetClass:"crypto"}]),
+  ...EQUITY_SYMBOLS.map(symbol=>[symbol,{symbol,label:symbol,market:"equity",assetClass:"equity"}]),
+  ...ETF_SYMBOLS.map(symbol=>[symbol,{symbol,label:symbol,market:"etf",assetClass:"etf"}]),
+]);
 const LEVERAGES = [1,2,3,5,10];
 const PROCHART_STRATEGIES = [
   ["ema_cross","EMA Crossover"],
@@ -33,6 +42,8 @@ function freshState(){
     capitalPerBook:1000,
     leverage:2,
     selectedStrategy:"council_auto",
+    councilUniverse:{mode:"discover",markets:["crypto","equity","etf"],symbols:[],maxCandidates:12},
+    latestUniverse:{mode:"discover",markets:["crypto","equity","etf"],symbols:[],candidates:[],reason:"Not scanned yet",updatedAt:null},
     books:{},
     orders:[],
     fills:[],
@@ -57,6 +68,8 @@ function newBook(key,label,capital){
 export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, callProvider}){
   fs.mkdirSync(path.dirname(STATE_FILE),{recursive:true});
   let state=Object.assign(freshState(),safeJson(STATE_FILE,{})||{});
+  state.councilUniverse=Object.assign({mode:"discover",markets:["crypto","equity","etf"],symbols:[],maxCandidates:12},state.councilUniverse||{});
+  state.latestUniverse=Object.assign({mode:state.councilUniverse.mode,markets:state.councilUniverse.markets,symbols:[],candidates:[],reason:"Not scanned yet",updatedAt:null},state.latestUniverse||{});
   let cycleBusy=false;
   const providers=[
     {provider:"nvidia",role:"Portfolio Manager"},
@@ -96,9 +109,115 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       const p=finite(row?.price,NaN);
       if(!row?.canonicalSymbol||!Number.isFinite(p)||p<=0) continue;
       const prev=map.get(row.canonicalSymbol);
-      if(!prev||row.provider==="binance") map.set(row.canonicalSymbol,row);
+      if(!prev||row.provider==="binance"||(!prev.change24h&&row.change24h!=null)) map.set(row.canonicalSymbol,row);
     }
     return map;
+  }
+
+  function marketKind(symbol,row=null){
+    if(ASSET_META[symbol]) return ASSET_META[symbol].market;
+    if(row?.assetClass==="crypto") return "crypto";
+    return row?.assetClass||"unknown";
+  }
+
+  async function fetchYahooObservation(symbol){
+    try{
+      const url="https://query1.finance.yahoo.com/v8/finance/chart/"+encodeURIComponent(symbol)+"?range=5d&interval=1d";
+      const res=await fetch(url,{headers:{"user-agent":"Mozilla/5.0"}});
+      if(!res.ok) throw new Error("yahoo_http_"+res.status);
+      const data=await res.json();
+      const result=data?.chart?.result?.[0];
+      const meta=result?.meta||{};
+      const price=finite(meta.regularMarketPrice,NaN);
+      if(!Number.isFinite(price)||price<=0) return null;
+      const previous=finite(meta.chartPreviousClose||meta.previousClose,price);
+      const change24h=previous>0?(price-previous)/previous*100:0;
+      const kind=ASSET_META[symbol]?.market||"equity";
+      return {
+        provider:"yahoo",canonicalSymbol:symbol,providerSymbol:symbol,
+        assetClass:kind,marketType:"SPOT",timestamp:now(),receivedAt:now(),
+        price,bid:null,ask:null,spread:null,change24h,
+        volume24h:finite(meta.regularMarketVolume),high24h:finite(meta.regularMarketDayHigh,null),
+        low24h:finite(meta.regularMarketDayLow,null),freshness:"LIVE",dataQuality:"good"
+      };
+    }catch{return null;}
+  }
+
+  async function augmentSnapshot(snapshot,symbols=[]){
+    const existing=marketMap(snapshot);
+    const yahooSymbols=[...new Set(symbols.map(s=>String(s).toUpperCase().trim()))]
+      .filter(s=>s&&!existing.has(s));
+    if(!yahooSymbols.length) return snapshot;
+    const rows=(await Promise.all(yahooSymbols.map(fetchYahooObservation))).filter(Boolean);
+    return {...snapshot,observations:[...(snapshot?.observations||[]),...rows]};
+  }
+
+  function cryptoOptions(snapshot,limit=30){
+    const seen=new Set();
+    return (snapshot?.observations||[])
+      .filter(row=>row.provider==="binance"&&row.assetClass==="crypto"&&row.canonicalSymbol&&!STABLE_CRYPTO.has(row.canonicalSymbol))
+      .filter(row=>{ if(seen.has(row.canonicalSymbol)) return false; seen.add(row.canonicalSymbol); return true; })
+      .sort((a,b)=>finite(b.volume24h)-finite(a.volume24h))
+      .slice(0,limit)
+      .map(row=>({symbol:row.canonicalSymbol,label:row.canonicalSymbol,market:"crypto",assetClass:"crypto"}));
+  }
+
+  function candidateRow(symbol,markets){
+    const row=markets.get(symbol);
+    if(!row) return null;
+    const change=finite(row.change24h);
+    const volume=Math.max(0,finite(row.volume24h));
+    const score=Math.abs(change)*1.5+Math.min(6,Math.log10(volume+1)*0.45);
+    return {
+      symbol,market:marketKind(symbol,row),price:finite(row.price),change24h:change,
+      volume24h:volume,provider:row.provider,discoveryScore:Number(score.toFixed(3))
+    };
+  }
+
+  async function resolveUniverse(baseSnapshot){
+    const cfg=state.councilUniverse||{};
+    const mode=["discover","manual","news"].includes(cfg.mode)?cfg.mode:"discover";
+    const selectedMarkets=(Array.isArray(cfg.markets)?cfg.markets:["crypto","equity","etf"]).filter(m=>["crypto","equity","etf"].includes(m));
+    const maxCandidates=clamp(Math.round(finite(cfg.maxCandidates,12)),3,25);
+    const crypto=cryptoOptions(baseSnapshot,35);
+    const staticForMarkets=[
+      ...(selectedMarkets.includes("equity")?EQUITY_SYMBOLS:[]),
+      ...(selectedMarkets.includes("etf")?ETF_SYMBOLS:[])
+    ];
+    const manualRequested=mode==="manual"&&Array.isArray(cfg.symbols)?cfg.symbols:[];
+    let snapshot=await augmentSnapshot(baseSnapshot,[...staticForMarkets,...manualRequested]);
+    const markets=marketMap(snapshot);
+    let symbols=[];
+    let reason="";
+
+    if(mode==="manual"){
+      symbols=[...new Set((cfg.symbols||[]).map(s=>String(s).toUpperCase().trim()))]
+        .filter(s=>markets.has(s)&&selectedMarkets.includes(marketKind(s,markets.get(s))))
+        .slice(0,maxCandidates);
+      reason=symbols.length?"User-selected assets.":"No selected asset currently has live market data.";
+    }else if(mode==="news"){
+      const pool=[
+        ...(selectedMarkets.includes("crypto")?crypto.map(x=>x.symbol):[]),
+        ...staticForMarkets
+      ].filter(s=>markets.has(s));
+      const newsPick=await discoverFromNews(pool,snapshot);
+      symbols=newsPick.symbols.slice(0,maxCandidates);
+      reason=newsPick.reason;
+    }else{
+      const pool=[
+        ...(selectedMarkets.includes("crypto")?crypto.map(x=>x.symbol):[]),
+        ...staticForMarkets
+      ];
+      symbols=pool.map(s=>candidateRow(s,markets)).filter(Boolean)
+        .sort((a,b)=>b.discoveryScore-a.discoveryScore)
+        .slice(0,maxCandidates).map(x=>x.symbol);
+      reason="Ranked supported assets by current absolute move and liquidity before council analysis.";
+    }
+
+    const candidates=symbols.map(s=>candidateRow(s,markets)).filter(Boolean);
+    state.latestUniverse={mode,markets:selectedMarkets,symbols,candidates,reason,updatedAt:now()};
+    save();
+    return {snapshot,symbols,candidates,reason,mode,markets:selectedMarkets};
   }
   function markBook(book){
     book.unrealizedPnl=book.positions.reduce((s,p)=>s+finite(p.unrealizedPnl),0);
@@ -237,10 +356,13 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     }finally{ clearTimeout(timer); }
   }
 
-  async function refreshStrategies(){
+  async function refreshStrategies(symbols=state.latestUniverse?.symbols||DEFAULT_CRYPTO.slice(0,3)){
     const results={};
     const tasks=[];
-    for(const symbol of SYMBOLS){
+    const targets=[...new Set(symbols)]
+      .filter(symbol=>!EQUITY_SYMBOLS.includes(symbol)&&!ETF_SYMBOLS.includes(symbol))
+      .slice(0,8);
+    for(const symbol of targets){
       for(const [strategy,label] of PROCHART_STRATEGIES){
         tasks.push((async()=>{
           try{
@@ -255,7 +377,7 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     await Promise.all(tasks);
     state.strategyResults=results;
     state.lastStrategyRefreshAt=now();
-    transcript("evidence","ProChart","Refreshed "+Object.values(results).filter(x=>x.ok).length+" live TradingView backtests across BTC, ETH and SOL.",{source:"prochart"});
+    transcript("evidence","ProChart","Refreshed "+Object.values(results).filter(x=>x.ok).length+" live TradingView backtests across "+(targets.join(", ")||"no crypto assets")+" in the current council universe.",{source:"prochart",symbols:targets});
     save();
     return results;
   }
@@ -267,7 +389,7 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       const data=await res.json();
       const rows=(Array.isArray(data)?data:(data?.data||[])).filter(m=>{
         const q=String(m.question||"").toLowerCase();
-        return /bitcoin|btc|ethereum|eth|crypto|fed|rate|inflation|recession|sec/.test(q);
+        return /bitcoin|btc|ethereum|eth|crypto|fed|rate|inflation|recession|sec|gold|oil|stock|s&p|nasdaq|nvidia|tesla|apple/.test(q);
       }).slice(0,12).map(m=>{
         let outcomes=[],prices=[];
         try{ outcomes=JSON.parse(m.outcomes||"[]"); prices=JSON.parse(m.outcomePrices||"[]"); }catch{}
@@ -296,13 +418,13 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
   }
 
   async function fetchNews(){
-    return fetchGoogleNewsRoom("Crypto News","bitcoin ethereum crypto markets today","news");
+    return fetchGoogleNewsRoom("Market News","stocks crypto bitcoin technology gold oil markets today","news");
   }
   async function fetchMacro(){
-    return fetchGoogleNewsRoom("Macro","Federal Reserve inflation CPI rates recession markets today","macro");
+    return fetchGoogleNewsRoom("Macro","Federal Reserve inflation CPI rates recession dollar yields oil markets today","macro");
   }
   async function fetchResearch(){
-    return fetchGoogleNewsRoom("Research","bitcoin ethereum crypto market analysis outlook research","research");
+    return fetchGoogleNewsRoom("Research","market outlook stocks crypto bitcoin gold oil technology investment research","research");
   }
 
   async function fetchDefiLlama(){
@@ -345,11 +467,49 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     return null;
   }
 
-  function compactContext(snapshot){
+  async function discoverFromNews(pool,snapshot){
+    if(!state.evidence?.updatedAt||now()-state.evidence.updatedAt>COUNCIL_REFRESH_MS) await gatherEvidence();
+    const allowed=[...new Set(pool)].filter(Boolean).slice(0,60);
+    if(!allowed.length) return {symbols:[],reason:"No supported assets are available in the selected markets."};
+    const evidenceItems=(state.evidence?.rooms||[]).flatMap(room=>(room.items||[]).slice(0,8).map(item=>({
+      room:room.source,
+      text:item.title||item.question||item.reason||item.status||""
+    }))).filter(x=>x.text).slice(0,40);
+    try{
+      const prompt=[
+        {role:"system",content:
+          "You are the News Discovery Scout for a PAPER multi-asset trading system. Select only assets from the allowed list that current news, macro events or prediction-market evidence makes unusually relevant for analysis now. Do not make a trade. Return ONLY JSON: "+
+          '{"symbols":["SYM1","SYM2"],"reason":"one concise explanation"}. Select 3 to 12 symbols when evidence supports them; fewer is acceptable if evidence is narrow.'},
+        {role:"user",content:JSON.stringify({allowedAssets:allowed,evidence:evidenceItems})}
+      ];
+      const result=await callProvider("nvidia",prompt);
+      const content=result?.data?.choices?.[0]?.message?.content||"";
+      const parsed=parseJsonObject(content);
+      const symbols=[...new Set((parsed?.symbols||[]).map(s=>String(s).toUpperCase()))].filter(s=>allowed.includes(s));
+      if(result?.ok&&symbols.length) return {symbols,reason:String(parsed.reason||"AI news scout selected assets from current evidence.").slice(0,500)};
+    }catch{}
+
+    const text=evidenceItems.map(x=>x.text.toLowerCase()).join(" ");
+    const keywordMap=[
+      ["bitcoin","BTC"],["btc","BTC"],["ethereum","ETH"],["ether","ETH"],["solana","SOL"],
+      ["nvidia","NVDA"],["apple","AAPL"],["microsoft","MSFT"],["amazon","AMZN"],["meta","META"],
+      ["tesla","TSLA"],["google","GOOGL"],["alphabet","GOOGL"],["amd","AMD"],["coinbase","COIN"],
+      ["microstrategy","MSTR"],["gold","GLD"],["silver","SLV"],["oil","USO"],["energy","XLE"],
+      ["nasdaq","QQQ"],["technology","XLK"],["financial","XLF"],["small cap","IWM"],["treasury","TLT"],["bond","TLT"]
+    ];
+    const hits=[];
+    for(const [keyword,symbol] of keywordMap) if(text.includes(keyword)&&allowed.includes(symbol)&&!hits.includes(symbol)) hits.push(symbol);
     const markets=marketMap(snapshot);
-    const marketRows=SYMBOLS.map(s=>{
+    const fallback=allowed.map(s=>candidateRow(s,markets)).filter(Boolean).sort((a,b)=>b.discoveryScore-a.discoveryScore).map(x=>x.symbol);
+    const symbols=[...hits,...fallback.filter(s=>!hits.includes(s))].slice(0,Math.min(12,allowed.length));
+    return {symbols,reason:hits.length?"Keyword fallback matched current evidence to supported assets.":"News scout fallback used current market opportunity ranking because no direct asset mentions were found."};
+  }
+
+  function compactContext(snapshot,symbols=state.latestUniverse?.symbols||DEFAULT_CRYPTO.slice(0,3)){
+    const markets=marketMap(snapshot);
+    const marketRows=symbols.map(s=>{
       const m=markets.get(s);
-      return m?{symbol:s,price:finite(m.price),change24h:finite(m.change24h),provider:m.provider}:null;
+      return m?{symbol:s,market:marketKind(s,m),price:finite(m.price),change24h:finite(m.change24h),volume24h:finite(m.volume24h),provider:m.provider}:null;
     }).filter(Boolean);
     const strategies={};
     for(const [key,row] of Object.entries(state.strategyResults||{})){
@@ -372,12 +532,14 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
   }
 
   async function askAgent(provider,role,context){
+    const allowedSymbols=(context.market||[]).map(row=>row.symbol);
+    if(!allowedSymbols.length) return {provider,role,ok:false,error:"no_assets_in_council_universe",symbol:null,side:"HOLD",confidence:0};
     const prompt=[
       {role:"system",content:
-        "You are "+role+" in a PAPER trading council. Use only supplied evidence. This is simulated execution on real market data. "+
-        "Choose at most one asset from BTC, ETH, SOL. Respond ONLY JSON: "+
-        '{"symbol":"BTC|ETH|SOL","side":"LONG|SHORT|HOLD","strategy":"short name","confidence":0.0,"leverage":1,"reason":"one concise evidence-based sentence"}. '+
-        "Never claim a live-money order. If evidence conflicts or is weak, HOLD."
+        "You are "+role+" in a PAPER multi-asset trading council. Use only supplied evidence. This is simulated execution on real market data. "+
+        "Choose at most one asset from this allowed list: "+allowedSymbols.join(", ")+". Respond ONLY JSON: "+
+        '{"symbol":"one allowed symbol","side":"LONG|SHORT|HOLD","strategy":"short name","confidence":0.0,"leverage":1,"reason":"one concise evidence-based sentence"}. '+
+        "Never claim a live-money order. Do not choose an asset outside the allowed list. If evidence conflicts or is weak, HOLD."
       },
       {role:"user",content:JSON.stringify(context)}
     ];
@@ -387,7 +549,7 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     let repaired=false;
     if(result?.ok && content && !parsed){
       const repairPrompt=[
-        {role:"system",content:"Convert the supplied trading vote into ONLY one valid JSON object with keys symbol, side, strategy, confidence, leverage, reason. Allowed symbols: BTC, ETH, SOL. Allowed sides: LONG, SHORT, HOLD. Do not add markdown."},
+        {role:"system",content:"Convert the supplied trading vote into ONLY one valid JSON object with keys symbol, side, strategy, confidence, leverage, reason. Allowed symbols: "+allowedSymbols.join(", ")+". Allowed sides: LONG, SHORT, HOLD. Do not add markdown."},
         {role:"user",content:String(content).slice(0,4000)}
       ];
       const retry=await callProvider(provider,repairPrompt);
@@ -407,7 +569,8 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
           : "invalid_json_response";
       return {provider,role,ok:false,error:detail,providerStatus:result?.status||0,raw:String(content||"").slice(0,1000)};
     }
-    const symbol=SYMBOLS.includes(String(parsed.symbol||"").toUpperCase())?String(parsed.symbol).toUpperCase():"BTC";
+    const rawSymbol=String(parsed.symbol||"").toUpperCase();
+    const symbol=allowedSymbols.includes(rawSymbol)?rawSymbol:allowedSymbols[0];
     const side=["LONG","SHORT","HOLD"].includes(String(parsed.side||"").toUpperCase())?String(parsed.side).toUpperCase():"HOLD";
     return {
       provider,role,ok:true,symbol,side,strategy:String(parsed.strategy||role),
@@ -418,10 +581,10 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     };
   }
 
-  function machineVotes(snapshot){
+  function machineVotes(snapshot,symbols=state.latestUniverse?.symbols||DEFAULT_CRYPTO.slice(0,3)){
     const votes=[];
     const markets=marketMap(snapshot);
-    for(const symbol of SYMBOLS){
+    for(const symbol of symbols){
       const m=markets.get(symbol);
       const ch=finite(m?.change24h);
       votes.push({
@@ -430,7 +593,7 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       });
     }
     for(const row of Object.values(state.strategyResults||{})){
-      if(!row?.ok||!SYMBOLS.includes(row.symbol)) continue;
+      if(!row?.ok||!symbols.includes(row.symbol)) continue;
       const signal=finite(row.latestSignal);
       const quality=Math.max(0.25,Math.min(0.8,
         0.35+(finite(row.profitFactor,1)-1)*0.15+Math.max(0,finite(row.netProfitPercent))*0.02-Math.max(0,finite(row.maxDrawdownPercent))*0.01
@@ -443,15 +606,18 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     }
     const cabbage=botIntegrations?.get?.("cabbage");
     const ca=String(cabbage?.latest?.action||"HOLD").toUpperCase();
-    votes.push({source:"CABBAGE",symbol:"BTC",side:ca==="BUY"?"LONG":ca==="SELL"?"SHORT":"HOLD",weight:1.2,reason:cabbage?.latest?.decisionTraces?.[0]?.summary||"CABBAGE latest persisted decision"});
+    if(symbols.includes("BTC")){
+      votes.push({source:"CABBAGE",symbol:"BTC",side:ca==="BUY"?"LONG":ca==="SELL"?"SHORT":"HOLD",weight:1.2,reason:cabbage?.latest?.decisionTraces?.[0]?.summary||"CABBAGE latest persisted decision"});
+    }
     const fly=botIntegrations?.get?.("stonkfly");
     const latest=fly?.latest||{};
     const flyHasReadout=fly?.latestAvailable===true && latest && Object.keys(latest).length>0;
     if(flyHasReadout){
       const flySide=String(latest.side||latest?.neural?.side||"HOLD").toUpperCase();
       const product=String(latest.product||"BTC-USDC").split("-")[0];
-      votes.push({
-        source:"Stonkfly",symbol:SYMBOLS.includes(product)?product:"BTC",
+      const flySymbol=symbols.includes(product)?product:null;
+      if(flySymbol) votes.push({
+        source:"Stonkfly",symbol:flySymbol,
         side:["BUY","LONG"].includes(flySide)?"LONG":["SELL","SHORT"].includes(flySide)?"SHORT":"HOLD",
         weight:1.2,
         reason:"Actual persisted connectome readout"
@@ -460,9 +626,9 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     return votes;
   }
 
-  function summarizeScore(votes){
+  function summarizeScore(votes,symbols=state.latestUniverse?.symbols||DEFAULT_CRYPTO.slice(0,3)){
     const board={};
-    for(const s of SYMBOLS) board[s]={LONG:0,SHORT:0,HOLD:0,net:0,votes:[]};
+    for(const s of symbols) board[s]={LONG:0,SHORT:0,HOLD:0,net:0,votes:[]};
     for(const v of votes){
       if(!board[v.symbol]) continue;
       const w=Math.max(0,finite(v.weight,finite(v.confidence,0.5)));
@@ -474,10 +640,10 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     return board;
   }
 
-  function strategyRecommendations(snapshot){
+  function strategyRecommendations(snapshot,symbols=state.latestUniverse?.symbols||DEFAULT_CRYPTO.slice(0,3)){
     const recs=[];
     for(const [strategy,label] of PROCHART_STRATEGIES){
-      const candidates=SYMBOLS.map(symbol=>state.strategyResults[symbol+":"+strategy]).filter(r=>r?.ok&&finite(r.latestSignal)!==0);
+      const candidates=symbols.map(symbol=>state.strategyResults[symbol+":"+strategy]).filter(r=>r?.ok&&finite(r.latestSignal)!==0);
       candidates.sort((a,b)=>{
         const qa=Math.abs(finite(a.netProfitPercent))*0.2+finite(a.profitFactor,0)-finite(a.maxDrawdownPercent)*0.05;
         const qb=Math.abs(finite(b.netProfitPercent))*0.2+finite(b.profitFactor,0)-finite(b.maxDrawdownPercent)*0.05;
@@ -505,26 +671,27 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     const flySide=String(fl.side||fl?.neural?.side||"HOLD").toUpperCase();
     const flySymbol=String(fl.product||"BTC-USDC").split("-")[0];
     recs.push({bookId:"stonkfly",rec:{
-      symbol:SYMBOLS.includes(flySymbol)?flySymbol:"BTC",
+      symbol:marketMap(snapshot).has(flySymbol)?flySymbol:"BTC",
       side:["BUY","LONG"].includes(flySide)?"LONG":["SELL","SHORT"].includes(flySide)?"EXIT":"HOLD",
       leverage:1,
       strategy:"Stonkfly Connectome",source:"stonkfly",
       reason:(fly?.runtimeStatus==="RUNNING"||fly?.runtimeStatus==="READY")?"Actual connectome readout.":"No actual fly readout available; HOLD."
     }});
     const markets=marketMap(snapshot);
-    const top=SYMBOLS.map(symbol=>({symbol,change24h:finite(markets.get(symbol)?.change24h)})).sort((a,b)=>Math.abs(b.change24h)-Math.abs(a.change24h))[0];
+    const top=symbols.map(symbol=>({symbol,change24h:finite(markets.get(symbol)?.change24h)})).filter(x=>markets.has(x.symbol)).sort((a,b)=>Math.abs(b.change24h)-Math.abs(a.change24h))[0];
     recs.push({bookId:"momentum",rec:top?{
       symbol:top.symbol,side:top.change24h>=1.5?"LONG":top.change24h<=-1.5?"SHORT":"HOLD",
       leverage:state.leverage,strategy:"24h Momentum",source:"momentum",
-      reason:"Largest BTC/ETH/SOL 24h move: "+top.change24h.toFixed(2)+"%."
+      reason:"Largest 24h move in the current council universe: "+top.symbol+" "+top.change24h.toFixed(2)+"%."
     }:null});
     return recs;
   }
 
-  async function runCouncil(snapshot){
-    if(!state.lastStrategyRefreshAt||now()-state.lastStrategyRefreshAt>STRATEGY_REFRESH_MS) await refreshStrategies();
+  async function runCouncil(snapshot,universe=state.latestUniverse){
+    const symbols=universe?.symbols||[];
+    if(!state.lastStrategyRefreshAt||now()-state.lastStrategyRefreshAt>STRATEGY_REFRESH_MS) await refreshStrategies(symbols);
     if(!state.evidence?.updatedAt||now()-state.evidence.updatedAt>COUNCIL_REFRESH_MS) await gatherEvidence();
-    const context=compactContext(snapshot);
+    const context=compactContext(snapshot,symbols);
     transcript("round","Council","New investment round started with real market data and PAPER-only execution.",{});
     const aiVotes=await Promise.all(providers.map(async p=>{
       try{
@@ -542,16 +709,28 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
         return vote;
       }
     }));
-    const machines=machineVotes(snapshot);
+    const machines=machineVotes(snapshot,symbols);
     for(const v of machines){
       transcript("machine",v.source,v.side+" "+v.symbol+" · "+v.reason,{vote:v});
     }
     const normalizedAi=aiVotes.filter(v=>v.ok).map(v=>({...v,source:v.role,weight:0.6+v.confidence*0.6}));
     const allVotes=[...machines,...normalizedAi];
-    const scoreboard=summarizeScore(allVotes);
-    const ranked=Object.entries(scoreboard).sort((a,b)=>Math.abs(b[1].net)-Math.abs(a[1].net));
-    const [symbol,best]=ranked[0];
+    const scoreboard=summarizeScore(allVotes,symbols);
     const threshold=1.6;
+    const ranked=Object.entries(scoreboard).sort((a,b)=>Math.abs(b[1].net)-Math.abs(a[1].net));
+    if(!ranked.length){
+      const decision={
+        id:id("council"),timestamp:now(),symbol:null,side:"HOLD",leverage:null,score:0,threshold,
+        longWeight:0,shortWeight:0,holdWeight:0,scoreboard:{},votes:allVotes,
+        universeMode:universe?.mode||state.councilUniverse?.mode,
+        reason:"No live asset is available in the current council universe, so no PAPER order was opened."
+      };
+      state.latestCouncil=decision; state.lastCouncilAt=now();
+      transcript("decision","Council Decision","NO TRADE · "+decision.reason,{decision});
+      save();
+      return decision;
+    }
+    const [symbol,best]=ranked[0];
     const side=Math.abs(best.net)<threshold?"HOLD":best.net>0?"LONG":"SHORT";
     const supporting=best.votes.filter(v=>v.side===side).map(v=>v.source);
     const conflicting=best.votes.filter(v=>v.side!=="HOLD"&&v.side!==side).map(v=>v.source);
@@ -559,7 +738,7 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       id:id("council"),timestamp:now(),symbol,side,leverage:side==="HOLD"?null:state.leverage,
       score:best.net,threshold,
       longWeight:best.LONG,shortWeight:best.SHORT,holdWeight:best.HOLD,
-      scoreboard,votes:allVotes,
+      scoreboard,votes:allVotes,universeMode:universe?.mode||state.councilUniverse?.mode,universeSymbols:symbols,
       reason:side==="HOLD"
         ?"No asset cleared the deterministic council agreement threshold, so no PAPER order was opened."
         : side+" "+symbol+" because "+supporting.join(", ")+" aligned"+(conflicting.length?"; disagreement: "+conflicting.join(", "):".")
@@ -578,9 +757,9 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     return decision;
   }
 
-  async function runStrategyBooks(snapshot){
+  async function runStrategyBooks(snapshot,symbols=state.latestUniverse?.symbols||DEFAULT_CRYPTO.slice(0,3)){
     const markets=marketMap(snapshot);
-    const recommendations=strategyRecommendations(snapshot);
+    const recommendations=strategyRecommendations(snapshot,symbols);
     for(const item of recommendations){
       if(!item.rec||!state.books[item.bookId]) continue;
       reconcileBookSignal(state.books[item.bookId],item.rec,markets);
@@ -597,17 +776,41 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     }
   }
 
+  async function scanUniverse(){
+    const baseSnapshot=await serverMarketSnapshot();
+    const universe=await resolveUniverse(baseSnapshot);
+    transcript("universe","Opportunity Scanner",
+      "Scanned "+universe.markets.join(", ")+" · "+universe.mode+" mode · candidates: "+(universe.symbols.join(", ")||"none")+". "+universe.reason,
+      {universe:{mode:universe.mode,markets:universe.markets,symbols:universe.symbols,candidates:universe.candidates,reason:universe.reason}});
+    save();
+    return state.latestUniverse;
+  }
+
   async function cycle(force=false){
     if(cycleBusy) return {skipped:true,state:publicState()};
     cycleBusy=true;
     try{
-      const snapshot=await serverMarketSnapshot();
-      markAndProtect(snapshot);
+      const baseSnapshot=await serverMarketSnapshot();
+      const openSymbols=Object.values(state.books||{}).flatMap(book=>(book.positions||[]).map(p=>p.symbol));
+      const markSnapshot=await augmentSnapshot(baseSnapshot,openSymbols);
+      markAndProtect(markSnapshot);
       if(!state.enabled&&!force) return {state:publicState()};
-      if(force||!state.lastStrategyRefreshAt||now()-state.lastStrategyRefreshAt>STRATEGY_REFRESH_MS) await refreshStrategies();
-      await runStrategyBooks(snapshot);
-      if(force||!state.lastCouncilAt||now()-state.lastCouncilAt>COUNCIL_REFRESH_MS) await runCouncil(snapshot);
-      markAndProtect(await serverMarketSnapshot());
+
+      let universe;
+      if(force||!state.latestUniverse?.updatedAt||now()-state.latestUniverse.updatedAt>COUNCIL_REFRESH_MS){
+        universe=await resolveUniverse(baseSnapshot);
+      }else{
+        const snapshot=await augmentSnapshot(baseSnapshot,state.latestUniverse.symbols||[]);
+        universe={...state.latestUniverse,snapshot};
+      }
+
+      const snapshot=universe.snapshot||await augmentSnapshot(baseSnapshot,universe.symbols||[]);
+      if(force||!state.lastStrategyRefreshAt||now()-state.lastStrategyRefreshAt>STRATEGY_REFRESH_MS) await refreshStrategies(universe.symbols||[]);
+      await runStrategyBooks(snapshot,universe.symbols||[]);
+      if(force||!state.lastCouncilAt||now()-state.lastCouncilAt>COUNCIL_REFRESH_MS) await runCouncil(snapshot,universe);
+      const finalBase=await serverMarketSnapshot();
+      const finalSymbols=[...(universe.symbols||[]),...Object.values(state.books||{}).flatMap(book=>(book.positions||[]).map(p=>p.symbol))];
+      markAndProtect(await augmentSnapshot(finalBase,finalSymbols));
       save();
       return {state:publicState()};
     }finally{cycleBusy=false;}
@@ -630,6 +833,23 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     return publicState();
   }
   function stop(){state.enabled=false;save();return publicState();}
+  function configureUniverse({mode,markets,symbols,maxCandidates}={}){
+    const nextMode=["discover","manual","news"].includes(mode)?mode:state.councilUniverse.mode;
+    const nextMarkets=[...new Set((Array.isArray(markets)?markets:state.councilUniverse.markets).filter(m=>["crypto","equity","etf"].includes(m)))];
+    const nextSymbols=[...new Set((Array.isArray(symbols)?symbols:state.councilUniverse.symbols).map(s=>String(s).toUpperCase().trim()).filter(s=>/^[A-Z0-9]{1,20}$/.test(s)))].slice(0,25);
+    state.councilUniverse={
+      mode:nextMode,
+      markets:nextMarkets.length?nextMarkets:["crypto"],
+      symbols:nextSymbols,
+      maxCandidates:clamp(Math.round(finite(maxCandidates,state.councilUniverse.maxCandidates||12)),3,25)
+    };
+    state.latestUniverse={mode:nextMode,markets:state.councilUniverse.markets,symbols:[],candidates:[],reason:"Universe settings changed; scan pending.",updatedAt:null};
+    transcript("selection","User","Council universe changed to "+nextMode+" · markets "+state.councilUniverse.markets.join(", ")+(nextMode==="manual"?" · assets "+(nextSymbols.join(", ")||"none"):""),{councilUniverse:state.councilUniverse});
+    save();
+    if(state.enabled) cycle(true).catch(()=>{});
+    return publicState();
+  }
+
   function selectStrategy(strategy){
     const valid=["council_auto",...PROCHART_STRATEGIES.map(([key])=>"prochart_"+key),"cabbage","stonkfly","momentum"];
     if(!valid.includes(strategy)) throw new Error("unknown_selected_strategy");
@@ -654,6 +874,13 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
         {key:"momentum",label:"24h Momentum"}
       ],
       leverageOptions:LEVERAGES,
+      councilUniverse:state.councilUniverse,
+      latestUniverse:state.latestUniverse,
+      assetCatalog:{
+        crypto:DEFAULT_CRYPTO.map(symbol=>({symbol,label:symbol,market:"crypto"})),
+        equity:EQUITY_SYMBOLS.map(symbol=>({symbol,label:symbol,market:"equity"})),
+        etf:ETF_SYMBOLS.map(symbol=>({symbol,label:symbol,market:"etf"}))
+      },
       books:Object.values(state.books).map(b=>({...b,winRate:b.tradeCount?b.wins/b.tradeCount:0})),
       positions:Object.values(state.books).flatMap(b=>b.positions),
       orders:state.orders.slice(-300).reverse(),
@@ -670,5 +897,5 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
   const timer=setInterval(()=>cycle(false).catch(()=>{}),MARK_MS);
   if(timer.unref) timer.unref();
 
-  return {state:publicState,start,stop,selectStrategy,cycle,refreshStrategies,gatherEvidence};
+  return {state:publicState,start,stop,selectStrategy,configureUniverse,scanUniverse,cycle,refreshStrategies,gatherEvidence};
 }

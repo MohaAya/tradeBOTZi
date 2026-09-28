@@ -174,20 +174,52 @@ async function serverHistoricalData(symbols, interval = "1d", limit = 90) {
         {},
         15000
       );
-      if (!response.ok || !Array.isArray(response.data)) return;
-      result[symbol] = response.data.map(k => ({
-        provider: "binance",
+      if (response.ok && Array.isArray(response.data) && response.data.length) {
+        result[symbol] = response.data.map(k => ({
+          provider: "binance",
+          canonicalSymbol: symbol,
+          timestamp: k[0],
+          interval: safeInterval,
+          open: Number(k[1]),
+          high: Number(k[2]),
+          low: Number(k[3]),
+          close: Number(k[4]),
+          volume: Number(k[5]),
+          sourceTimestamp: k[0],
+          ingestionTimestamp: Date.now()
+        }));
+        return;
+      }
+    } catch {}
+
+    try {
+      const yahooInterval = safeInterval === "4h" ? "1h" : safeInterval;
+      const range = safeInterval === "1m" ? "7d"
+        : ["5m","15m"].includes(safeInterval) ? "60d"
+        : safeInterval === "1h" || safeInterval === "4h" ? "2y"
+        : "5y";
+      const response = await fetchJson(
+        `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=${yahooInterval}`,
+        { headers: { "user-agent": "Mozilla/5.0" } },
+        15000
+      );
+      const chart = response.data?.chart?.result?.[0];
+      const timestamps = chart?.timestamp || [];
+      const quote = chart?.indicators?.quote?.[0] || {};
+      const bars = timestamps.map((ts, i) => ({
+        provider: "yahoo",
         canonicalSymbol: symbol,
-        timestamp: k[0],
+        timestamp: Number(ts) * 1000,
         interval: safeInterval,
-        open: Number(k[1]),
-        high: Number(k[2]),
-        low: Number(k[3]),
-        close: Number(k[4]),
-        volume: Number(k[5]),
-        sourceTimestamp: k[0],
+        open: Number(quote.open?.[i]),
+        high: Number(quote.high?.[i]),
+        low: Number(quote.low?.[i]),
+        close: Number(quote.close?.[i]),
+        volume: Number(quote.volume?.[i] || 0),
+        sourceTimestamp: Number(ts) * 1000,
         ingestionTimestamp: Date.now()
-      }));
+      })).filter(bar => [bar.open,bar.high,bar.low,bar.close].every(Number.isFinite));
+      if (bars.length) result[symbol] = bars.slice(-safeLimit);
     } catch {}
   }));
 
@@ -498,6 +530,26 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         return sendJson(res, 400, { ok: false, paperOnly: true, error: String(error) });
       }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/universe") {
+      const body = await readBody(req);
+      try {
+        const room = investmentRoom.configureUniverse({
+          mode: body.mode,
+          markets: body.markets,
+          symbols: body.symbols,
+          maxCandidates: body.maxCandidates
+        });
+        return sendJson(res, 200, { ok: true, paperOnly: true, room });
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, paperOnly: true, error: String(error) });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/universe/scan") {
+      const universe = await investmentRoom.scanUniverse();
+      return sendJson(res, 200, { ok: true, paperOnly: true, universe });
     }
 
     if (req.method === "POST" && url.pathname === "/api/investment-room/run") {

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   Bot,
@@ -84,6 +84,12 @@ export default function InvestmentRoom() {
   const [leverage, setLeverage] = useState(2);
   const [selectedBook, setSelectedBook] = useState('council_auto');
   const [symbol, setSymbol] = useState('BTC');
+  const [universeMode, setUniverseMode] = useState('discover');
+  const [universeMarkets, setUniverseMarkets] = useState<string[]>(['crypto', 'equity', 'etf']);
+  const [universeSymbols, setUniverseSymbols] = useState<string[]>([]);
+  const [maxCandidates, setMaxCandidates] = useState(12);
+  const [customSymbol, setCustomSymbol] = useState('');
+  const universeInitialized = useRef(false);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -99,6 +105,14 @@ export default function InvestmentRoom() {
       if (roomRes.ok && roomData.ok) {
         setRoom(roomData.room);
         if (roomData.room?.leverage) setLeverage(Number(roomData.room.leverage));
+        if (!universeInitialized.current && roomData.room?.councilUniverse) {
+          const cfg = roomData.room.councilUniverse;
+          setUniverseMode(cfg.mode || 'discover');
+          setUniverseMarkets(Array.isArray(cfg.markets) && cfg.markets.length ? cfg.markets : ['crypto']);
+          setUniverseSymbols(Array.isArray(cfg.symbols) ? cfg.symbols : []);
+          setMaxCandidates(Number(cfg.maxCandidates || 12));
+          universeInitialized.current = true;
+        }
       }
       if (providerRes.ok && Array.isArray(providerData.providers)) {
         setAiProviders(providerData.providers);
@@ -175,6 +189,53 @@ export default function InvestmentRoom() {
     }
   };
 
+  const toggleUniverseMarket = (market: string) => {
+    setUniverseMarkets(current => current.includes(market)
+      ? current.filter(item => item !== market)
+      : [...current, market]);
+  };
+
+  const toggleUniverseSymbol = (asset: string) => {
+    setUniverseSymbols(current => current.includes(asset)
+      ? current.filter(item => item !== asset)
+      : [...current, asset]);
+  };
+
+  const addCustomSymbol = () => {
+    const clean = customSymbol.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20);
+    if (!clean) return;
+    setUniverseSymbols(current => current.includes(clean) ? current : [...current, clean]);
+    setCustomSymbol('');
+  };
+
+  const applyUniverse = async (scanOnly = true) => {
+    if (!universeMarkets.length) {
+      setError('Select at least one market.');
+      return;
+    }
+    if (universeMode === 'manual' && universeSymbols.length === 0) {
+      setError('Choose at least one asset in manual mode.');
+      return;
+    }
+    setBusy('universe');
+    try {
+      await post('/api/investment-room/universe', {
+        mode: universeMode,
+        markets: universeMarkets,
+        symbols: universeSymbols,
+        maxCandidates,
+      });
+      if (scanOnly) await post('/api/investment-room/universe/scan');
+      setNotice(scanOnly
+        ? 'Council universe updated and scanned. Review the candidates before running the council.'
+        : 'Council universe settings updated.');
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy('');
+    }
+  };
+
   const books = room?.books || [];
   const currentBook = books.find((b: any) => b.key === selectedBook) || books[0];
   const positions = room?.positions || [];
@@ -185,6 +246,24 @@ export default function InvestmentRoom() {
   const evidenceRooms = room?.evidence?.rooms || [];
   const council = room?.latestCouncil;
   const strategyResults = room?.strategyResults || {};
+  const latestUniverse = room?.latestUniverse || {};
+  const assetCatalog = room?.assetCatalog || { crypto: [], equity: [], etf: [] };
+  const selectableAssets = [
+    ...(universeMarkets.includes('crypto') ? assetCatalog.crypto || [] : []),
+    ...(universeMarkets.includes('equity') ? assetCatalog.equity || [] : []),
+    ...(universeMarkets.includes('etf') ? assetCatalog.etf || [] : []),
+  ];
+  const chartSymbols = useMemo(() => {
+    const values = [
+      ...(latestUniverse?.symbols || []),
+      ...positions.map((p: any) => p.symbol),
+      symbol,
+      'BTC',
+      'ETH',
+      'SOL',
+    ].filter(Boolean);
+    return [...new Set(values)].slice(0, 16);
+  }, [latestUniverse?.symbols, positions, symbol]);
   const buildProviderCards = (ids: string[]) => ids.map(id => {
     const provider = aiProviders.find((item: any) => item.id === id) || { id, status: 'unknown', healthy: false, model: '' };
     const latest = transcript.find((msg: any) => msg.kind === 'agent' && msg.meta?.provider === id);
@@ -322,6 +401,164 @@ export default function InvestmentRoom() {
             <p><span className="text-gray-200 font-medium">Run Council + Strategies Now</span> forces one immediate evaluation using current market/evidence data even while continuous entries are paused.</p>
             <p><span className="text-gray-200 font-medium">Reset</span> clears PAPER portfolios and starts their performance histories again from the capital you entered.</p>
           </div>
+        </SectionHelp>
+      </div>
+
+      <div className="rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 via-gray-900 to-gray-950 p-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-cyan-400" />
+              <h3 className="text-white text-lg font-semibold">Council Universe</h3>
+              <span className="text-[10px] px-2 py-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 text-cyan-300">
+                MULTI-MARKET
+              </span>
+            </div>
+            <p className="text-gray-400 text-xs mt-2 max-w-3xl">
+              Decide what the council is allowed to analyze before it votes. Discovery and scanning do not place a PAPER trade; the council still needs to clear the execution threshold.
+            </p>
+          </div>
+          <button onClick={() => applyUniverse(true)} disabled={!!busy}
+            className="px-3 py-2 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 disabled:opacity-40 text-xs flex items-center gap-2">
+            <RefreshCw className={'w-3.5 h-3.5 ' + (busy === 'universe' ? 'animate-spin' : '')} />
+            Apply + Scan Universe
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 mt-5">
+          {[
+            ['discover', 'Discover Opportunities', 'Scan the selected markets first, rank supported assets by current movement and liquidity, then give the strongest candidates to the council.'],
+            ['manual', 'Choose Markets / Assets', 'You choose exactly which markets and symbols the council may analyze. Useful when you already have a watchlist or thesis.'],
+            ['news', 'News-Driven Discovery', 'Use current news, macro, research and prediction-market evidence to decide which supported assets deserve council attention now.'],
+          ].map(([mode, title, copy]) => (
+            <button key={mode} onClick={() => setUniverseMode(mode)}
+              className={'text-left rounded-xl border p-4 transition ' + (
+                universeMode === mode
+                  ? 'border-cyan-500/50 bg-cyan-500/10'
+                  : 'border-gray-700 bg-gray-950/60 hover:border-gray-600'
+              )}>
+              <p className={universeMode === mode ? 'text-cyan-200 text-sm font-semibold' : 'text-white text-sm font-semibold'}>{title}</p>
+              <p className="text-gray-500 text-[11px] mt-2 leading-relaxed">{copy}</p>
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-5">
+          <p className="text-[10px] uppercase tracking-wide text-gray-500">Markets to include</p>
+          <div className="flex flex-wrap gap-2 mt-2">
+            {[
+              ['crypto', 'Crypto'],
+              ['equity', 'US Equities'],
+              ['etf', 'ETFs / Macro Proxies'],
+            ].map(([market, label]) => (
+              <button key={market} onClick={() => toggleUniverseMarket(market)}
+                className={'px-3 py-2 rounded-lg border text-xs ' + (
+                  universeMarkets.includes(market)
+                    ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                    : 'border-gray-700 bg-gray-950 text-gray-500'
+                )}>
+                {universeMarkets.includes(market) ? '✓ ' : ''}{label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {universeMode === 'manual' && (
+          <div className="mt-5 rounded-xl border border-gray-800 bg-gray-950/60 p-4">
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <div>
+                <p className="text-white text-sm font-medium">Assets the council may analyze</p>
+                <p className="text-gray-500 text-[10px] mt-1">Select from the supported catalog or add a ticker. Assets without a live quote are ignored rather than invented.</p>
+              </div>
+              <span className="text-[10px] text-cyan-300">{universeSymbols.length} selected</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5 mt-3 max-h-[180px] overflow-y-auto">
+              {selectableAssets.map((asset: any) => (
+                <button key={asset.symbol} onClick={() => toggleUniverseSymbol(asset.symbol)}
+                  className={'px-2.5 py-1.5 rounded-md border text-[11px] ' + (
+                    universeSymbols.includes(asset.symbol)
+                      ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-200'
+                      : 'border-gray-800 bg-gray-900 text-gray-500 hover:text-gray-300'
+                  )}>
+                  {asset.symbol}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-2 mt-3">
+              <input value={customSymbol} onChange={e => setCustomSymbol(e.target.value.toUpperCase())}
+                onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustomSymbol(); } }}
+                placeholder="Add ticker e.g. PLTR"
+                className="w-52 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none focus:border-cyan-500/50" />
+              <button onClick={addCustomSymbol}
+                className="px-3 py-2 rounded-lg border border-gray-700 bg-gray-900 text-gray-300 text-xs">
+                Add
+              </button>
+              {universeSymbols.length > 0 && (
+                <button onClick={() => setUniverseSymbols([])}
+                  className="px-3 py-2 rounded-lg border border-gray-800 bg-gray-950 text-gray-500 text-xs">
+                  Clear
+                </button>
+              )}
+            </div>
+            {universeSymbols.length > 0 && (
+              <p className="text-[10px] text-gray-500 mt-3">Selected: <span className="text-gray-300">{universeSymbols.join(', ')}</span></p>
+            )}
+          </div>
+        )}
+
+        {universeMode !== 'manual' && (
+          <div className="mt-5 flex items-center gap-3 flex-wrap">
+            <label className="text-xs text-gray-400">Candidates passed to council</label>
+            <select value={maxCandidates} onChange={e => setMaxCandidates(Number(e.target.value))}
+              className="bg-gray-950 border border-gray-700 rounded-lg px-3 py-2 text-xs text-white outline-none">
+              {[6, 8, 12, 16, 20, 25].map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+            <span className="text-[10px] text-gray-600">The scanner may inspect a broader market, then narrows it before AI voting.</span>
+          </div>
+        )}
+
+        <div className="mt-5 rounded-xl border border-gray-800 bg-gray-950/70 p-4">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <p className="text-white text-sm font-medium">Current council candidates</p>
+              <p className="text-gray-500 text-[10px] mt-1">
+                {latestUniverse?.updatedAt ? new Date(latestUniverse.updatedAt).toLocaleTimeString() : 'Not scanned yet'}
+                {latestUniverse?.mode ? ' · ' + latestUniverse.mode : ''}
+              </p>
+            </div>
+            <button onClick={runNow} disabled={!!busy || !(latestUniverse?.symbols || []).length}
+              className="px-3 py-2 rounded-lg bg-violet-500/10 border border-violet-500/30 text-violet-300 disabled:opacity-40 text-xs">
+              Run Council on Candidates
+            </button>
+          </div>
+          <p className="text-gray-400 text-[11px] mt-3">{latestUniverse?.reason || 'Scan a universe to generate candidates.'}</p>
+          <div className="flex flex-wrap gap-2 mt-3">
+            {(latestUniverse?.candidates || []).map((candidate: any) => (
+              <button key={candidate.symbol} onClick={() => setSymbol(candidate.symbol)}
+                className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-left hover:border-cyan-500/30">
+                <div className="flex items-center gap-2">
+                  <span className="text-white text-xs font-semibold">{candidate.symbol}</span>
+                  <span className="text-[9px] uppercase text-gray-600">{candidate.market}</span>
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-gray-400 text-[10px]">{money(candidate.price)}</span>
+                  <span className={(Number(candidate.change24h) >= 0 ? 'text-emerald-300' : 'text-red-300') + ' text-[10px]'}>
+                    {Number(candidate.change24h) >= 0 ? '+' : ''}{num(candidate.change24h)}%
+                  </span>
+                </div>
+              </button>
+            ))}
+            {!(latestUniverse?.candidates || []).length && (
+              <p className="text-gray-600 text-xs">No candidates yet.</p>
+            )}
+          </div>
+        </div>
+
+        <SectionHelp title="How to use Council Universe">
+          <p><span className="text-gray-200 font-medium">Discover Opportunities</span> is for broad scanning. Use it when you want the system to find what is moving or liquid enough to deserve analysis rather than starting with a ticker.</p>
+          <p className="mt-2"><span className="text-gray-200 font-medium">Choose Markets / Assets</span> is for a controlled watchlist. The council cannot vote on anything outside your selected symbols.</p>
+          <p className="mt-2"><span className="text-gray-200 font-medium">News-Driven Discovery</span> first asks which supported assets are made relevant by current news/macro/event evidence, then the trading council evaluates those candidates.</p>
+          <p className="mt-2"><span className="text-gray-200 font-medium">Apply + Scan Universe</span> only finds candidates. It does not place a PAPER order. <span className="text-gray-200 font-medium">Run Council on Candidates</span> is the separate step that can produce a PAPER order if the deterministic threshold is cleared.</p>
         </SectionHelp>
       </div>
 
@@ -543,8 +780,8 @@ export default function InvestmentRoom() {
               <p className="text-white font-medium">{currentBook?.label || 'Portfolio'} · {symbol}USDT</p>
               <p className="text-gray-500 text-xs">Real Binance 1h candles · PAPER fills shown as chart markers · entry/stop/target lines when a position is open</p>
             </div>
-            <div className="flex items-center gap-1.5">
-              {['BTC','ETH','SOL'].map(s => (
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {chartSymbols.map(s => (
                 <button key={s} onClick={() => setSymbol(s)}
                   className={'px-3 py-1.5 rounded-lg border text-xs ' + (
                     symbol === s ? 'border-cyan-500/50 bg-cyan-500/10 text-cyan-300' : 'border-gray-700 bg-gray-950 text-gray-500'
