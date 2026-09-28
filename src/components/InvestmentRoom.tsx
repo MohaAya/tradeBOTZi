@@ -32,6 +32,19 @@ const providerLabels: Record<string, string> = {
   ollama: 'Ollama',
 };
 
+const providerRoles: Record<string, string> = {
+  nvidia: 'Portfolio Manager',
+  'nvidia-ultra': 'Strategic Allocator',
+  'nvidia-critic': 'Independent Reasoning Critic',
+  'nvidia-gemma': 'Technical Pattern Analyst',
+  omniroute: 'Independent Market Analyst',
+  hermes: 'Risk Critic',
+  freellm: 'Macro & Event Analyst',
+  ollama: 'Technical Explainer',
+};
+
+const nvidiaProviderIds = ['nvidia', 'nvidia-ultra', 'nvidia-critic', 'nvidia-gemma'];
+
 function money(value: any) {
   const n = Number(value);
   return Number.isFinite(n)
@@ -52,6 +65,7 @@ function sideClass(side: string) {
 
 export default function InvestmentRoom() {
   const [room, setRoom] = useState<any>(null);
+  const [aiProviders, setAiProviders] = useState<any[]>([]);
   const [capital, setCapital] = useState(1000);
   const [leverage, setLeverage] = useState(2);
   const [selectedBook, setSelectedBook] = useState('council_auto');
@@ -62,11 +76,18 @@ export default function InvestmentRoom() {
 
   const refresh = async () => {
     try {
-      const res = await fetch('/api/investment-room/state', { cache: 'no-store' });
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        setRoom(data.room);
-        if (data.room?.leverage) setLeverage(Number(data.room.leverage));
+      const [roomRes, providerRes] = await Promise.all([
+        fetch('/api/investment-room/state', { cache: 'no-store' }),
+        fetch('/api/ai/providers', { cache: 'no-store' }),
+      ]);
+      const roomData = await roomRes.json();
+      const providerData = await providerRes.json();
+      if (roomRes.ok && roomData.ok) {
+        setRoom(roomData.room);
+        if (roomData.room?.leverage) setLeverage(Number(roomData.room.leverage));
+      }
+      if (providerRes.ok && Array.isArray(providerData.providers)) {
+        setAiProviders(providerData.providers);
       }
     } catch {}
   };
@@ -150,6 +171,11 @@ export default function InvestmentRoom() {
   const evidenceRooms = room?.evidence?.rooms || [];
   const council = room?.latestCouncil;
   const strategyResults = room?.strategyResults || {};
+  const nvidiaProviders = nvidiaProviderIds.map(id => {
+    const provider = aiProviders.find((item: any) => item.id === id) || { id, status: 'unknown', healthy: false, model: '' };
+    const latest = transcript.find((msg: any) => msg.kind === 'agent' && msg.meta?.provider === id);
+    return { ...provider, latest };
+  });
 
   const strategiesForSymbol = useMemo(() => {
     return Object.values(strategyResults)
@@ -263,6 +289,75 @@ export default function InvestmentRoom() {
             className="px-4 py-2.5 rounded-lg bg-gray-900 border border-gray-700 text-gray-400 hover:text-white text-sm">
             Reset All Paper Portfolios
           </button>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-emerald-500/30 bg-gradient-to-br from-emerald-500/10 via-gray-900 to-gray-950 p-5">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2">
+              <Brain className="w-5 h-5 text-emerald-400" />
+              <h3 className="text-white text-lg font-semibold">NVIDIA AI Council Agents</h3>
+              <span className="text-[10px] px-2 py-1 rounded-full border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">
+                LIVE PROVIDERS
+              </span>
+            </div>
+            <p className="text-gray-400 text-xs mt-2">
+              These are four separate NVIDIA-hosted models. Each casts its own investment vote; unavailable models are excluded from the council score.
+            </p>
+          </div>
+          <button onClick={runNow} disabled={!!busy}
+            className="px-3 py-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 disabled:opacity-40 text-xs flex items-center gap-2">
+            <RefreshCw className={'w-3.5 h-3.5 ' + (busy === 'run' ? 'animate-spin' : '')} />
+            Ask NVIDIA + Council Now
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mt-4">
+          {nvidiaProviders.map((agent: any) => {
+            const vote = agent.latest?.meta?.vote;
+            const connected = agent.status === 'connected' && agent.healthy !== false;
+            const voteOk = vote?.ok === true;
+            return (
+              <div key={agent.id} className="rounded-xl border border-gray-700 bg-gray-950/80 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-white text-sm font-semibold">{providerLabels[agent.id] || agent.label}</p>
+                    <p className="text-emerald-300 text-[10px] mt-1">{providerRoles[agent.id]}</p>
+                  </div>
+                  <span className={'shrink-0 text-[9px] px-2 py-1 rounded-full border ' + (
+                    connected
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                      : 'border-red-500/30 bg-red-500/10 text-red-300'
+                  )}>
+                    {connected ? 'CONNECTED' : 'UNAVAILABLE'}
+                  </span>
+                </div>
+
+                <p className="text-gray-600 text-[9px] mt-2 break-all">{agent.model || 'model unavailable'}</p>
+
+                <div className="mt-4 rounded-lg border border-gray-800 bg-gray-900/80 p-3">
+                  <p className="text-[9px] uppercase tracking-wide text-gray-600">Latest vote</p>
+                  {agent.latest ? (
+                    <>
+                      <div className="flex items-center justify-between gap-2 mt-1.5">
+                        <p className={'text-sm font-bold ' + (voteOk ? sideClass(vote.side) : 'text-red-300')}>
+                          {voteOk ? vote.side + ' ' + vote.symbol : 'UNAVAILABLE'}
+                        </p>
+                        {voteOk && Number.isFinite(Number(vote.confidence)) && (
+                          <span className="text-[10px] text-gray-500">{Math.round(Number(vote.confidence) * 100)}% confidence</span>
+                        )}
+                      </div>
+                      <p className="text-gray-400 text-[10px] mt-2 leading-relaxed line-clamp-4">{agent.latest.message}</p>
+                      <p className="text-gray-600 text-[9px] mt-2">{new Date(agent.latest.timestamp).toLocaleTimeString()}</p>
+                    </>
+                  ) : (
+                    <p className="text-gray-500 text-xs mt-2">No council vote yet. Run the council to ask this model.</p>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
