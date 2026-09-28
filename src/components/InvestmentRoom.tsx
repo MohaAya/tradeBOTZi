@@ -355,10 +355,15 @@ export default function InvestmentRoom() {
             <div className="m-3 p-3 rounded-xl bg-violet-500/10 border border-violet-500/20">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-violet-200 text-xs font-semibold">Latest Council Decision</p>
-                <span className={'text-xs font-bold ' + sideClass(council.side)}>{council.side} {council.symbol} · {council.leverage}×</span>
+                <span className={'text-xs font-bold ' + sideClass(council.side)}>
+                  {council.side === 'HOLD' ? 'NO TRADE · ' + council.symbol : council.side + ' ' + council.symbol + ' · ' + council.leverage + '×'}
+                </span>
               </div>
               <p className="text-gray-300 text-xs mt-2">{council.reason}</p>
-              <p className="text-gray-500 text-[10px] mt-2">Agreement score {num(council.score)} · deterministic threshold required before PAPER execution.</p>
+              <p className="text-gray-500 text-[10px] mt-2">
+                Action score {num(council.score)} · execution threshold ±{num(council.threshold ?? 1.6)} ·
+                LONG {num(council.longWeight ?? 0)} · SHORT {num(council.shortWeight ?? 0)} · HOLD {num(council.holdWeight ?? 0)}
+              </p>
             </div>
           )}
 

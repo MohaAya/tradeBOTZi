@@ -444,14 +444,17 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     votes.push({source:"CABBAGE",symbol:"BTC",side:ca==="BUY"?"LONG":ca==="SELL"?"SHORT":"HOLD",weight:1.2,reason:cabbage?.latest?.decisionTraces?.[0]?.summary||"CABBAGE latest persisted decision"});
     const fly=botIntegrations?.get?.("stonkfly");
     const latest=fly?.latest||{};
-    const flySide=String(latest.side||latest?.neural?.side||"HOLD").toUpperCase();
-    const product=String(latest.product||"BTC-USDC").split("-")[0];
-    votes.push({
-      source:"Stonkfly",symbol:SYMBOLS.includes(product)?product:"BTC",
-      side:["BUY","LONG"].includes(flySide)?"LONG":["SELL","SHORT"].includes(flySide)?"SHORT":"HOLD",
-      weight:fly?.runtimeStatus==="RUNNING"||fly?.runtimeStatus==="READY"?1.2:0,
-      reason:fly?.runtimeStatus==="RUNNING"||fly?.runtimeStatus==="READY"?"Real connectome readout":"Fly runtime unavailable; vote excluded"
-    });
+    const flyHasReadout=fly?.latestAvailable===true && latest && Object.keys(latest).length>0;
+    if(flyHasReadout){
+      const flySide=String(latest.side||latest?.neural?.side||"HOLD").toUpperCase();
+      const product=String(latest.product||"BTC-USDC").split("-")[0];
+      votes.push({
+        source:"Stonkfly",symbol:SYMBOLS.includes(product)?product:"BTC",
+        side:["BUY","LONG"].includes(flySide)?"LONG":["SELL","SHORT"].includes(flySide)?"SHORT":"HOLD",
+        weight:1.2,
+        reason:"Actual persisted connectome readout"
+      });
+    }
     return votes;
   }
 
@@ -546,15 +549,19 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     const supporting=best.votes.filter(v=>v.side===side).map(v=>v.source);
     const conflicting=best.votes.filter(v=>v.side!=="HOLD"&&v.side!==side).map(v=>v.source);
     const decision={
-      id:id("council"),timestamp:now(),symbol,side,leverage:state.leverage,
-      score:best.net,scoreboard,votes:allVotes,
+      id:id("council"),timestamp:now(),symbol,side,leverage:side==="HOLD"?null:state.leverage,
+      score:best.net,threshold,
+      longWeight:best.LONG,shortWeight:best.SHORT,holdWeight:best.HOLD,
+      scoreboard,votes:allVotes,
       reason:side==="HOLD"
-        ?"No asset cleared the deterministic council agreement threshold."
+        ?"No asset cleared the deterministic council agreement threshold, so no PAPER order was opened."
         : side+" "+symbol+" because "+supporting.join(", ")+" aligned"+(conflicting.length?"; disagreement: "+conflicting.join(", "):".")
     };
     state.latestCouncil=decision;
     state.lastCouncilAt=now();
-    transcript("decision","Council Decision",decision.side+" "+decision.symbol+" "+decision.leverage+"× · "+decision.reason,{decision});
+    transcript("decision","Council Decision",
+      (decision.side==="HOLD"?"NO TRADE "+decision.symbol:decision.side+" "+decision.symbol+" "+decision.leverage+"×")+" · "+decision.reason,
+      {decision});
     const markets=marketMap(snapshot);
     const councilRec={symbol,side,leverage:state.leverage,strategy:"Council Auto",source:"council",reason:decision.reason,councilId:decision.id};
     reconcileBookSignal(state.books.council_auto,councilRec,markets);
