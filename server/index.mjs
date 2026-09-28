@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { createAgentDesk } from "./agentDesk.mjs";
 import { createBotIntegrations } from "./botIntegrations.mjs";
 import { createBeginnerPaper } from "./beginnerPaper.mjs";
+import { createInvestmentRoom } from "./investmentRoom.mjs";
 
 const PORT = Number(process.env.PORT || 3001);
 const OMNI_URL = process.env.OMNIROUTE_BASE_URL || "http://host.docker.internal:20128/v1";
@@ -278,20 +279,27 @@ async function runChatJob(messages) {
   return { ok: false, error: "All AI providers failed", attempts };
 }
 
+async function callProvider(provider, messages) {
+  if (provider === "omniroute") return omniChat(messages);
+  if (provider === "freellm") return freeLlmChat(messages);
+  if (provider === "hermes") return hermesChat(messages);
+  if (provider === "ollama") return ollamaChat(messages);
+  throw new Error(`Unknown AI provider: ${provider}`);
+}
+
 const botIntegrations = createBotIntegrations();
-const beginnerPaper = createBeginnerPaper({ serverMarketSnapshot });
+const beginnerPaper = createBeginnerPaper({ serverMarketSnapshot, getBotState: (id) => botIntegrations.get(id) });
+const investmentRoom = createInvestmentRoom({
+  serverMarketSnapshot,
+  botIntegrations,
+  callProvider,
+});
 
 const agentDesk = createAgentDesk({
   serverMarketSnapshot,
   externalBotCommand: (command) => botIntegrations.naturalCommand(command),
   beginnerPaperCommand: (command) => beginnerPaper.naturalCommand(command),
-  callProvider: async (provider, messages) => {
-    if (provider === "omniroute") return omniChat(messages);
-    if (provider === "freellm") return freeLlmChat(messages);
-    if (provider === "hermes") return hermesChat(messages);
-    if (provider === "ollama") return ollamaChat(messages);
-    throw new Error(`Unknown AI provider: ${provider}`);
-  },
+  callProvider,
   providerModel: (provider) => provider === "omniroute" ? OMNI_MODEL : provider === "freellm" ? "auto" : provider === "hermes" ? "hermes-agent" : provider === "ollama" ? OLLAMA_MODEL : "unknown",
   extractProviderContent: extractContent,
 });
@@ -363,6 +371,7 @@ const server = http.createServer(async (req, res) => {
       const demo = beginnerPaper.startAutopilot({
         capital: body.capital,
         riskLevel: body.riskLevel,
+        leverage: body.leverage,
         resetAccount: body.resetAccount === true
       });
       return sendJson(res, 200, { ok: true, paperOnly: true, demo });
@@ -392,7 +401,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/demo/reset") {
       const body = await readBody(req);
-      const demo = beginnerPaper.reset(body.capital, body.riskLevel);
+      const demo = beginnerPaper.reset(body.capital, body.riskLevel, body.leverage);
       return sendJson(res, 200, { ok: true, paperOnly: true, demo });
     }
 
@@ -400,6 +409,49 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const live = beginnerPaper.recordLivePermission(body.phrase);
       return sendJson(res, 200, { ok: true, live });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/investment-room/state") {
+      return sendJson(res, 200, { ok: true, room: investmentRoom.state() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/start") {
+      const body = await readBody(req);
+      const room = investmentRoom.start({
+        capital: body.capital,
+        leverage: body.leverage,
+        reset: body.reset === true
+      });
+      return sendJson(res, 200, { ok: true, paperOnly: true, room });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/stop") {
+      return sendJson(res, 200, { ok: true, paperOnly: true, room: investmentRoom.stop() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/select-strategy") {
+      const body = await readBody(req);
+      try {
+        const room = investmentRoom.selectStrategy(String(body.strategy || ""));
+        return sendJson(res, 200, { ok: true, paperOnly: true, room });
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, paperOnly: true, error: String(error) });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/run") {
+      const result = await investmentRoom.cycle(true);
+      return sendJson(res, 200, { ok: true, paperOnly: true, result });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/evidence") {
+      const evidence = await investmentRoom.gatherEvidence();
+      return sendJson(res, 200, { ok: true, evidence });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/investment-room/strategies") {
+      const strategies = await investmentRoom.refreshStrategies();
+      return sendJson(res, 200, { ok: true, strategies });
     }
 
     if (req.method === "GET" && url.pathname === "/api/markets") {

@@ -17,7 +17,7 @@ import { compareAcrossVenues } from './lib/providers';
 // ============================================================
 const navItems = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'demo-invest', label: 'Invest / Demo', icon: DollarSign },
+  { id: 'demo-invest', label: 'Investment Room', icon: DollarSign },
   { id: 'agents', label: 'Strategy Profiles', icon: Users },
   { id: 'agent-desk', label: 'Agent Desk', icon: Brain },
   { id: 'prochart', label: 'ProChart', icon: Globe },
@@ -72,7 +72,7 @@ import AgentDesk from './components/AgentDesk';
 import ProChartDesk from './components/ProChartDesk';
 import TaskCenter from './components/TaskCenter';
 import GithubBotIntegrations from './components/GithubBotIntegrations';
-import BeginnerInvest from './components/BeginnerInvest';
+import InvestmentRoom from './components/InvestmentRoom';
 
 // ============================================================
 // AGENTS PANEL
@@ -1528,7 +1528,7 @@ export default function App() {
   const renderContent = (tab: string) => {
     switch (tab) {
       case 'dashboard': return <Dashboard store={store} />;
-      case 'demo-invest': return <BeginnerInvest />;
+      case 'demo-invest': return <InvestmentRoom />;
       case 'agents': return <AgentsPanel store={store} onOpenAgentDesk={(prompt) => {
         if (prompt) {
           localStorage.setItem('tradebotzi:agent-desk-draft', prompt);

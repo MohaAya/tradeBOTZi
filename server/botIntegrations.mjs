@@ -189,19 +189,44 @@ function stonkflyState() {
   const sourceConnected = fs.existsSync(path.join(root, "stonkfly", "cli.py"));
   const memoryGiB = totalMemoryGiB();
   const running = processRunning("stonkfly run");
-  const prepared = fs.existsSync(path.join(root, ".tradebotzi-prepared"));
+  const prepared = fs.existsSync(path.join(root, "data", "graph.npz"))
+    && fs.existsSync(path.join(root, "data", "annotations.feather"))
+    && fs.existsSync(path.join(root, "data", "normalized", "neurons.feather"));
+  const latestCandidates = [
+    path.join(root, "runs", "paper", "latest.json"),
+    path.join(root, "runs", "tradebotzi-paper", "latest.json"),
+    path.join(root, "runs", "tradebotzi-smoke", "latest.json")
+  ];
+  let latest = null;
+  let latestPath = null;
+  for (const candidate of latestCandidates) {
+    if (!fs.existsSync(candidate)) continue;
+    latest = safeJson(candidate, null);
+    latestPath = candidate;
+    if (latest) break;
+  }
   return {
     id: "stonkfly",
     name: "Stonkfly Connectome Bot",
     repository: "nftechie/stonkfly",
     url: "https://github.com/nftechie/stonkfly",
     sourceConnected,
-    runtimeStatus: running ? "RUNNING" : memoryGiB !== null && memoryGiB < 16 ? "RESOURCE_BLOCKED" : prepared ? "READY" : "SOURCE_ONLY",
+    runtimeReady: prepared,
+    runtimeStatus: running ? "RUNNING" : prepared ? "READY" : memoryGiB !== null && memoryGiB < 16 ? "RESOURCE_BLOCKED" : "SOURCE_ONLY",
     executionMode: "PAPER DEFAULT",
-    description: "Experimental fly-connectome controller with guarded trading actions.",
-    reason: memoryGiB !== null && memoryGiB < 16
-      ? "Source connected, but this runtime has " + memoryGiB + " GiB RAM while upstream recommends 16 GB. The connectome runtime is intentionally not started."
-      : prepared ? "Prepared runtime is available." : "Source is connected; full connectome preparation has not been run.",
+    latest,
+    latestAvailable: Boolean(latest),
+    latestPath,
+    description: "Experimental fly-connectome controller with guarded PAPER trading actions.",
+    reason: running
+      ? "The verified Stonkfly PAPER runtime is running."
+      : prepared
+        ? (latest
+          ? "The checksum-verified connectome is prepared and a persisted PAPER readout is available."
+          : "The checksum-verified connectome is prepared. No current PAPER readout exists yet, so the investment council excludes the fly vote instead of inventing one.")
+        : memoryGiB !== null && memoryGiB < 16
+          ? "Source is connected but the upstream project recommends 16 GB RAM before preparation."
+          : "Source is connected; full connectome preparation has not been run.",
     requirements: { recommendedRamGiB: 16, detectedRamGiB: memoryGiB }
   };
 }

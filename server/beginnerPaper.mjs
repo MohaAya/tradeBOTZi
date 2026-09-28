@@ -7,10 +7,13 @@ const AUTO_SCAN_MS = 60000;
 const FEE_RATE = 0.001;
 const UNIVERSE = ["BTC","ETH","SOL","BNB","XRP","ADA","DOGE","AVAX","LINK","DOT"];
 
+const DEMO_LEVERAGE_OPTIONS = [1, 2, 3, 5, 10];
+const MAX_DEMO_LEVERAGE = 10;
+
 const PRESETS = {
-  conservative: { label: "Conservative", maxLeverage: 1, defaultLeverage: 1, marginFraction: 0.10, stopPct: 2, takePct: 4, maxPositions: 2, minSignalPct: 2.0 },
-  balanced: { label: "Balanced", maxLeverage: 2, defaultLeverage: 2, marginFraction: 0.10, stopPct: 2.5, takePct: 5, maxPositions: 3, minSignalPct: 1.5 },
-  aggressive: { label: "Aggressive", maxLeverage: 3, defaultLeverage: 3, marginFraction: 0.08, stopPct: 3, takePct: 6, maxPositions: 4, minSignalPct: 1.0 }
+  conservative: { label: "Conservative", marginFraction: 0.10, stopPct: 2, takePct: 4, maxPositions: 2, minSignalPct: 2.0 },
+  balanced: { label: "Balanced", marginFraction: 0.10, stopPct: 2.5, takePct: 5, maxPositions: 3, minSignalPct: 1.5 },
+  aggressive: { label: "Aggressive", marginFraction: 0.08, stopPct: 3, takePct: 6, maxPositions: 4, minSignalPct: 1.0 }
 };
 
 function now() { return Date.now(); }
@@ -31,6 +34,7 @@ function freshState() {
     autopilot: {
       enabled: false,
       riskLevel: "balanced",
+      leverage: 2,
       lastScanAt: null,
       lastActionAt: null,
       nextScanAt: null,
@@ -56,7 +60,7 @@ function loadState() {
   }
 }
 
-export function createBeginnerPaper({ serverMarketSnapshot }) {
+export function createBeginnerPaper({ serverMarketSnapshot, getBotState }) {
   fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   let state = loadState();
   let busy = false;
@@ -140,13 +144,15 @@ export function createBeginnerPaper({ serverMarketSnapshot }) {
         ]
       }),
       riskPresets: PRESETS,
+      leverageOptions: DEMO_LEVERAGE_OPTIONS,
+      maxDemoLeverage: MAX_DEMO_LEVERAGE,
       universe: UNIVERSE,
       updatedAt: state.updatedAt
     };
   }
 
-  function reset(capital = 1000, riskLevel = "balanced") {
-    const cleanCapital = clamp(finite(capital, 1000), 100, 1000000);
+  function reset(capital = 1000, riskLevel = "balanced", leverage = 2) {
+    const cleanCapital = clamp(finite(capital, 1000), 10, 1000000);
     const level = PRESETS[riskLevel] ? riskLevel : "balanced";
     state = freshState();
     state.account = {
@@ -165,6 +171,7 @@ export function createBeginnerPaper({ serverMarketSnapshot }) {
       updatedAt: now()
     };
     state.autopilot.riskLevel = level;
+    state.autopilot.leverage = clamp(Math.round(finite(leverage, 2)), 1, MAX_DEMO_LEVERAGE);
     save();
     return publicState();
   }
@@ -183,7 +190,7 @@ export function createBeginnerPaper({ serverMarketSnapshot }) {
       return {
         symbol,
         direction,
-        leverage: direction === "HOLD" ? 1 : p.defaultLeverage,
+        leverage: direction === "HOLD" ? 1 : clamp(Math.round(finite(state.autopilot.leverage, 2)), 1, MAX_DEMO_LEVERAGE),
         price: finite(market.price),
         change24h: change,
         signalStrength: strength,
@@ -214,9 +221,10 @@ export function createBeginnerPaper({ serverMarketSnapshot }) {
     const market = marketMap(snapshot).get(symbol);
     if (!market) throw new Error("demo_market_price_unavailable");
     const marketPrice = finite(market.price);
-    const leverage = clamp(Math.round(finite(input.leverage, p.defaultLeverage)), 1, p.maxLeverage);
+    const leverage = clamp(Math.round(finite(input.leverage, state.autopilot.leverage || 2)), 1, MAX_DEMO_LEVERAGE);
     const defaultMargin = finite(state.account.equity) * p.marginFraction;
-    const margin = clamp(finite(input.margin, defaultMargin), 10, Math.max(10, finite(state.account.cash) * 0.5));
+    const maxMargin = Math.max(1, finite(state.account.cash) * 0.5);
+    const margin = clamp(finite(input.margin, defaultMargin), 1, maxMargin);
     const notional = margin * leverage;
     const observedSpreadRate = market.spread && marketPrice ? Math.max(0, finite(market.spread) / marketPrice) : 0.0005;
     const friction = observedSpreadRate / 2 + 0.0002;
@@ -393,10 +401,11 @@ export function createBeginnerPaper({ serverMarketSnapshot }) {
     }
   }
 
-  function startAutopilot({ capital = 1000, riskLevel = "balanced", resetAccount = false } = {}) {
-    if (!state.account || resetAccount) reset(capital, riskLevel);
+  function startAutopilot({ capital = 1000, riskLevel = "balanced", leverage = 2, resetAccount = false } = {}) {
+    if (!state.account || resetAccount) reset(capital, riskLevel, leverage);
     state.autopilot.enabled = true;
     state.autopilot.riskLevel = PRESETS[riskLevel] ? riskLevel : state.autopilot.riskLevel;
+    state.autopilot.leverage = clamp(Math.round(finite(leverage, state.autopilot.leverage || 2)), 1, MAX_DEMO_LEVERAGE);
     state.autopilot.nextScanAt = now();
     save();
     tick(true).catch(() => {});
