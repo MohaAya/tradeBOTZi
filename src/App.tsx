@@ -5,7 +5,7 @@ import {
   ChevronDown, ChevronUp, Clock, TrendingUp, TrendingDown, Search,
   Download, Filter, ArrowUpRight, ArrowDownRight, Shield, Bell, Globe,
   Key, Database, Save, Check, Cpu, Server, Loader2, WifiOff, Award,
-  Droplet, Link2, DollarSign, Brain, RefreshCw, MessageSquare, Send
+  Droplet, Link2, DollarSign, Brain, RefreshCw, MessageSquare, Send, ExternalLink
 } from 'lucide-react';
 import { useAppStore } from './lib/useAppStore';
 import type { AppStore } from './lib/useAppStore';
@@ -78,6 +78,26 @@ function AgentsPanel({ store }: { store: AppStore }) {
   const { agents, updateAgent, createAgent } = store;
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
+  const [githubBots, setGithubBots] = useState<any[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const response = await fetch('/api/bot-integrations', { cache: 'no-store' });
+        const data = await response.json();
+        if (!cancelled && response.ok && data.ok && Array.isArray(data.bots)) {
+          setGithubBots(data.bots);
+        }
+      } catch {}
+    };
+    refresh();
+    const timer = setInterval(refresh, 10000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   const handleCreate = () => {
     if (!newName.trim()) return;
@@ -107,11 +127,70 @@ function AgentsPanel({ store }: { store: AppStore }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-white">Strategy Profiles</h2>
-          <p className="text-gray-400 text-sm mt-1">Saved local configuration only. These cards are not autonomous VPS processes; actual AI work appears under Server Tasks and Agent Desk.</p>
+          <p className="text-gray-400 text-sm mt-1">Local profiles plus source-linked GitHub bot integrations. Runtime status below is reported by the VPS, not inferred by the UI.</p>
         </div>
         <button onClick={() => setShowCreate(!showCreate)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
           <Zap className="w-4 h-4" />Create Agent
         </button>
+      </div>
+
+      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div>
+            <h3 className="text-white font-semibold">GitHub Bot Integrations</h3>
+            <p className="text-gray-500 text-xs mt-1">These are external bot repositories connected to this VPS. Status is live and PAPER-only unless explicitly stated otherwise.</p>
+          </div>
+          <span className="text-[10px] px-2 py-1 rounded bg-gray-900 border border-gray-700 text-gray-400">{githubBots.length} sources</span>
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {githubBots.map(bot => {
+            const active = bot.runtimeStatus === 'RUNNING';
+            const ready = bot.runtimeStatus === 'READY';
+            const blocked = bot.runtimeStatus === 'RESOURCE_BLOCKED';
+            return (
+              <div key={bot.id} className="bg-gray-950/60 border border-gray-700 rounded-xl p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Bot className="w-4 h-4 text-cyan-400" />
+                      <h4 className="text-white font-medium">{bot.name}</h4>
+                    </div>
+                    <p className="text-gray-500 text-[11px] mt-1">{bot.repository}</p>
+                  </div>
+                  <span className={'text-[10px] px-2 py-1 rounded border ' + (
+                    active ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
+                    ready ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-300' :
+                    blocked ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
+                    'bg-red-500/10 border-red-500/20 text-red-300'
+                  )}>
+                    {bot.runtimeStatus}
+                  </span>
+                </div>
+                <p className="text-gray-300 text-xs mt-3">{bot.description}</p>
+                <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
+                  <div className="bg-gray-900 rounded p-2">
+                    <p className="text-gray-500">Source</p>
+                    <p className={bot.sourceConnected ? 'text-emerald-300' : 'text-red-300'}>{bot.sourceConnected ? 'CONNECTED' : 'MISSING'}</p>
+                  </div>
+                  <div className="bg-gray-900 rounded p-2">
+                    <p className="text-gray-500">Execution</p>
+                    <p className="text-amber-300">{bot.executionMode}</p>
+                  </div>
+                </div>
+                {bot.reason && <p className="text-gray-500 text-[11px] mt-3">{bot.reason}</p>}
+                <a href={bot.url} target="_blank" rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 text-xs mt-3">
+                  <ExternalLink className="w-3.5 h-3.5" /> Open source repository
+                </a>
+              </div>
+            );
+          })}
+          {githubBots.length === 0 && (
+            <div className="xl:col-span-2 bg-gray-950/50 border border-gray-800 rounded-lg p-4 text-xs text-gray-500">
+              Waiting for VPS integration status...
+            </div>
+          )}
+        </div>
       </div>
 
       {showCreate && (
@@ -1510,11 +1589,30 @@ function generateChatResponse(
 // MAIN APP
 // ============================================================
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState(() => {
+    try {
+      return localStorage.getItem('tradebotzi:active-tab') || 'dashboard';
+    } catch {
+      return 'dashboard';
+    }
+  });
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(['dashboard', activeTab]));
   const store = useAppStore();
 
-  const renderContent = () => {
-    switch (activeTab) {
+  useEffect(() => {
+    setVisitedTabs(prev => {
+      if (prev.has(activeTab)) return prev;
+      const next = new Set(prev);
+      next.add(activeTab);
+      return next;
+    });
+    try {
+      localStorage.setItem('tradebotzi:active-tab', activeTab);
+    } catch {}
+  }, [activeTab]);
+
+  const renderContent = (tab: string) => {
+    switch (tab) {
       case 'dashboard': return <Dashboard store={store} />;
       case 'agents': return <AgentsPanel store={store} />;
       case 'agent-desk': return <AgentDesk store={store} onOpenProChart={() => setActiveTab('prochart')} />;
@@ -1549,7 +1647,17 @@ export default function App() {
           </div>
         </div>
         <TaskCenter />
-        {renderContent()}
+        <div>
+          {Array.from(visitedTabs).map(tab => (
+            <div
+              key={tab}
+              style={{ display: activeTab === tab ? 'block' : 'none' }}
+              aria-hidden={activeTab !== tab}
+            >
+              {renderContent(tab)}
+            </div>
+          ))}
+        </div>
       </main>
     </div>
   );

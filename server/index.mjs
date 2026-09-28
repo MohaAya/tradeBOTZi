@@ -17,6 +17,78 @@ const OMNI_KEY = process.env.OMNIROUTE_API_KEY || pick("AI_GATEWAY_API_KEY");
 const HERMES_KEY = process.env.HERMES_API_KEY || (fs.existsSync(hermesKeyPath) ? fs.readFileSync(hermesKeyPath, "utf8").trim() : "");
 const OMNI_MODEL = process.env.OMNIROUTE_MODEL || pick("AI_GATEWAY_MODEL") || "auto/best-chat";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b";
+const BOT_INTEGRATIONS_ROOT = process.env.BOT_INTEGRATIONS_ROOT || "/opt/tradebotzi-integrations";
+
+function processCommandContains(needle) {
+  try {
+    for (const entry of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const cmdline = fs.readFileSync(`/proc/${entry}/cmdline`, "utf8").replace(/\0/g, " ");
+        if (cmdline.includes(needle)) return true;
+      } catch {}
+    }
+  } catch {}
+  return false;
+}
+
+function totalMemoryGiB() {
+  try {
+    const text = fs.readFileSync("/proc/meminfo", "utf8");
+    const kb = Number(text.match(/^MemTotal:\s+(\d+)\s+kB/m)?.[1] || 0);
+    return Math.round((kb / 1024 / 1024) * 10) / 10;
+  } catch {
+    return null;
+  }
+}
+
+function botIntegrationStatus() {
+  const cabbageRoot = `${BOT_INTEGRATIONS_ROOT}/cabbage`;
+  const stonkflyRoot = `${BOT_INTEGRATIONS_ROOT}/stonkfly`;
+  const cabbageSource = fs.existsSync(`${cabbageRoot}/cabbage/__main__.py`);
+  const cabbageReady = fs.existsSync(`${cabbageRoot}/.tradebotzi-ready`);
+  const cabbageRunning = processCommandContains("cabbage paper");
+  const memoryGiB = totalMemoryGiB();
+  const stonkflySource = fs.existsSync(`${stonkflyRoot}/stonkfly/cli.py`);
+  const stonkflyPrepared = fs.existsSync(`${stonkflyRoot}/data`) && fs.existsSync(`${stonkflyRoot}/.tradebotzi-prepared`);
+
+  return [
+    {
+      id: "cabbage",
+      name: "CABBAGE RSI + EMA",
+      repository: "sopersone/cabbage-trading-machine",
+      url: "https://github.com/sopersone/cabbage-trading-machine",
+      sourceConnected: cabbageSource,
+      runtimeStatus: cabbageRunning ? "RUNNING" : cabbageReady ? "READY" : cabbageSource ? "INSTALLING" : "MISSING",
+      executionMode: "PAPER ONLY",
+      description: "Original Investing Algorithm Framework runtime using the repository's RSI/EMA spot strategy, isolated from tradeBOTZi execution.",
+      reason: cabbageRunning
+        ? "Continuous CABBAGE paper process is running on the VPS."
+        : cabbageReady
+          ? "Runtime passed its own online doctor and PAPER smoke test; service is ready."
+          : cabbageSource
+            ? "Source is cloned; Python runtime installation/validation has not completed yet."
+            : "Repository is not present on the VPS."
+    },
+    {
+      id: "stonkfly",
+      name: "Stonkfly Connectome Bot",
+      repository: "nftechie/stonkfly",
+      url: "https://github.com/nftechie/stonkfly",
+      sourceConnected: stonkflySource,
+      runtimeStatus: stonkflyPrepared && processCommandContains("stonkfly run")
+        ? "RUNNING"
+        : (memoryGiB !== null && memoryGiB < 16 ? "RESOURCE_BLOCKED" : stonkflyPrepared ? "READY" : "SOURCE_ONLY"),
+      executionMode: "PAPER DEFAULT",
+      description: "Experimental fly-connectome controller with guarded trading actions. Source is kept separate from tradeBOTZi's deterministic risk engine.",
+      reason: memoryGiB !== null && memoryGiB < 16
+        ? `Source connected, but this VPS has ${memoryGiB} GiB RAM while the upstream project recommends 16 GB; the heavy connectome runtime is intentionally not started.`
+        : stonkflyPrepared
+          ? "Prepared runtime is available."
+          : "Source is cloned; full connectome preparation has not been run."
+    }
+  ];
+}
 
 function sendJson(res, code, body) {
   res.writeHead(code, {
@@ -299,6 +371,9 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, service: "tradebotzi-api", paperOnly: true });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/bot-integrations") {
+      return sendJson(res, 200, { ok: true, paperOnly: true, bots: botIntegrationStatus() });
+    }
 
     if (req.method === "GET" && url.pathname === "/api/markets") {
       const snapshot = await serverMarketSnapshot();
