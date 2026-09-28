@@ -2,6 +2,7 @@ import http from "node:http";
 import { URL } from "node:url";
 import fs from "node:fs";
 import { createAgentDesk } from "./agentDesk.mjs";
+import { createBotIntegrations } from "./botIntegrations.mjs";
 
 const PORT = Number(process.env.PORT || 3001);
 const OMNI_URL = process.env.OMNIROUTE_BASE_URL || "http://host.docker.internal:20128/v1";
@@ -17,78 +18,6 @@ const OMNI_KEY = process.env.OMNIROUTE_API_KEY || pick("AI_GATEWAY_API_KEY");
 const HERMES_KEY = process.env.HERMES_API_KEY || (fs.existsSync(hermesKeyPath) ? fs.readFileSync(hermesKeyPath, "utf8").trim() : "");
 const OMNI_MODEL = process.env.OMNIROUTE_MODEL || pick("AI_GATEWAY_MODEL") || "auto/best-chat";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:3b";
-const BOT_INTEGRATIONS_ROOT = process.env.BOT_INTEGRATIONS_ROOT || "/opt/tradebotzi-integrations";
-
-function processCommandContains(needle) {
-  try {
-    for (const entry of fs.readdirSync("/proc")) {
-      if (!/^\d+$/.test(entry)) continue;
-      try {
-        const cmdline = fs.readFileSync(`/proc/${entry}/cmdline`, "utf8").replace(/\0/g, " ");
-        if (cmdline.includes(needle)) return true;
-      } catch {}
-    }
-  } catch {}
-  return false;
-}
-
-function totalMemoryGiB() {
-  try {
-    const text = fs.readFileSync("/proc/meminfo", "utf8");
-    const kb = Number(text.match(/^MemTotal:\s+(\d+)\s+kB/m)?.[1] || 0);
-    return Math.round((kb / 1024 / 1024) * 10) / 10;
-  } catch {
-    return null;
-  }
-}
-
-function botIntegrationStatus() {
-  const cabbageRoot = `${BOT_INTEGRATIONS_ROOT}/cabbage`;
-  const stonkflyRoot = `${BOT_INTEGRATIONS_ROOT}/stonkfly`;
-  const cabbageSource = fs.existsSync(`${cabbageRoot}/cabbage/__main__.py`);
-  const cabbageReady = fs.existsSync(`${cabbageRoot}/.tradebotzi-ready`);
-  const cabbageRunning = processCommandContains("cabbage paper");
-  const memoryGiB = totalMemoryGiB();
-  const stonkflySource = fs.existsSync(`${stonkflyRoot}/stonkfly/cli.py`);
-  const stonkflyPrepared = fs.existsSync(`${stonkflyRoot}/data`) && fs.existsSync(`${stonkflyRoot}/.tradebotzi-prepared`);
-
-  return [
-    {
-      id: "cabbage",
-      name: "CABBAGE RSI + EMA",
-      repository: "sopersone/cabbage-trading-machine",
-      url: "https://github.com/sopersone/cabbage-trading-machine",
-      sourceConnected: cabbageSource,
-      runtimeStatus: cabbageRunning ? "RUNNING" : cabbageReady ? "READY" : cabbageSource ? "INSTALLING" : "MISSING",
-      executionMode: "PAPER ONLY",
-      description: "Original Investing Algorithm Framework runtime using the repository's RSI/EMA spot strategy, isolated from tradeBOTZi execution.",
-      reason: cabbageRunning
-        ? "Continuous CABBAGE paper process is running on the VPS."
-        : cabbageReady
-          ? "Runtime passed its own online doctor and PAPER smoke test; service is ready."
-          : cabbageSource
-            ? "Source is cloned; Python runtime installation/validation has not completed yet."
-            : "Repository is not present on the VPS."
-    },
-    {
-      id: "stonkfly",
-      name: "Stonkfly Connectome Bot",
-      repository: "nftechie/stonkfly",
-      url: "https://github.com/nftechie/stonkfly",
-      sourceConnected: stonkflySource,
-      runtimeStatus: stonkflyPrepared && processCommandContains("stonkfly run")
-        ? "RUNNING"
-        : (memoryGiB !== null && memoryGiB < 16 ? "RESOURCE_BLOCKED" : stonkflyPrepared ? "READY" : "SOURCE_ONLY"),
-      executionMode: "PAPER DEFAULT",
-      description: "Experimental fly-connectome controller with guarded trading actions. Source is kept separate from tradeBOTZi's deterministic risk engine.",
-      reason: memoryGiB !== null && memoryGiB < 16
-        ? `Source connected, but this VPS has ${memoryGiB} GiB RAM while the upstream project recommends 16 GB; the heavy connectome runtime is intentionally not started.`
-        : stonkflyPrepared
-          ? "Prepared runtime is available."
-          : "Source is cloned; full connectome preparation has not been run."
-    }
-  ];
-}
 
 function sendJson(res, code, body) {
   res.writeHead(code, {
@@ -348,8 +277,11 @@ async function runChatJob(messages) {
   return { ok: false, error: "All AI providers failed", attempts };
 }
 
+const botIntegrations = createBotIntegrations();
+
 const agentDesk = createAgentDesk({
   serverMarketSnapshot,
+  externalBotCommand: (command) => botIntegrations.naturalCommand(command),
   callProvider: async (provider, messages) => {
     if (provider === "omniroute") return omniChat(messages);
     if (provider === "freellm") return freeLlmChat(messages);
@@ -372,7 +304,46 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/bot-integrations") {
-      return sendJson(res, 200, { ok: true, paperOnly: true, bots: botIntegrationStatus() });
+      return sendJson(res, 200, { ok: true, paperOnly: true, bots: botIntegrations.list() });
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/bots/jobs/")) {
+      const jobId = url.pathname.slice("/api/bots/jobs/".length);
+      const job = botIntegrations.getJob(jobId);
+      return job
+        ? sendJson(res, 200, { ok: true, paperOnly: true, job })
+        : sendJson(res, 404, { ok: false, paperOnly: true, error: "bot_job_not_found" });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/bots/jobs") {
+      return sendJson(res, 200, {
+        ok: true,
+        paperOnly: true,
+        jobs: botIntegrations.listJobs(Number(url.searchParams.get("limit") || 20))
+      });
+    }
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/bots/")) {
+      const botId = url.pathname.slice("/api/bots/".length);
+      const bot = botIntegrations.get(botId);
+      return bot
+        ? sendJson(res, 200, { ok: true, paperOnly: true, bot })
+        : sendJson(res, 404, { ok: false, paperOnly: true, error: "bot_not_found" });
+    }
+
+    if (req.method === "POST" && /^\/api\/bots\/[^/]+\/actions$/.test(url.pathname)) {
+      const botId = url.pathname.split("/")[3];
+      const body = await readBody(req);
+      const action = String(body.action || "");
+      if (!["run_once", "backtest"].includes(action)) {
+        return sendJson(res, 400, { ok: false, paperOnly: true, error: "unsupported_bot_action" });
+      }
+      try {
+        const job = botIntegrations.startAction(botId, action);
+        return sendJson(res, 202, { ok: true, paperOnly: true, job });
+      } catch (error) {
+        return sendJson(res, 400, { ok: false, paperOnly: true, error: String(error) });
+      }
     }
 
     if (req.method === "GET" && url.pathname === "/api/markets") {

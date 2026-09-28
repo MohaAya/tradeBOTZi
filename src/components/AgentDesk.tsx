@@ -115,9 +115,20 @@ export default function AgentDesk({
   useEffect(() => {
     refreshStatus();
     pollEvents();
+    const applyDraft = (value?: string) => {
+      const draft = value || localStorage.getItem('tradebotzi:agent-desk-draft') || '';
+      if (draft) {
+        setCommand(draft);
+        localStorage.removeItem('tradebotzi:agent-desk-draft');
+      }
+    };
+    const draftHandler = (event: Event) => applyDraft((event as CustomEvent<string>).detail);
+    applyDraft();
+    window.addEventListener('tradebotzi:agent-desk-draft', draftHandler);
     const statusTimer = setInterval(refreshStatus, 10000);
     const eventTimer = setInterval(pollEvents, 1500);
     return () => {
+      window.removeEventListener('tradebotzi:agent-desk-draft', draftHandler);
       clearInterval(statusTimer);
       clearInterval(eventTimer);
     };
@@ -212,6 +223,21 @@ export default function AgentDesk({
         });
       }
 
+      if (result.externalBots?.requestedBot === 'cabbage') {
+        const bot = result.externalBots.state;
+        const action = result.externalBots.actionExecuted;
+        agentMessages.unshift({
+          kind: 'system',
+          ok: !result.externalBots.error,
+          content:
+            'CABBAGE adapter' + (action ? ' executed ' + action : ' supplied live context') + '. ' +
+            'Latest action: ' + (bot?.latest?.action || 'UNKNOWN') +
+            ', RSI: ' + (bot?.latest?.rsi != null ? Number(bot.latest.rsi).toFixed(2) : '—') +
+            ', closed candle: ' + (bot?.latest?.closedCandlePrice != null ? '€' + Number(bot.latest.closedCandlePrice).toLocaleString() : '—') +
+            ', PAPER net gain: ' + (bot?.portfolio?.totalNetGain != null ? '€' + Number(bot.portfolio.totalNetGain).toFixed(2) : '—') + '.',
+        });
+      }
+
       if (result.paperExecution) {
         const exec = result.paperExecution;
         if (exec.ok) {
@@ -260,6 +286,7 @@ export default function AgentDesk({
   };
 
   const quickCommands = [
+    'Ask CABBAGE for its current BTC/EUR signal, decision trace, indicators, PAPER portfolio state and latest trades. Explain the actual bot output without inventing missing data.',
     'Analyze the current portfolios. Each agent should challenge the allocations from its own role.',
     'Open ProChart BTCUSDT, inspect indicators, and run a backtest. Report what actually happened.',
     'Compare BTC, ETH and SOL risk and explain which portfolio exposures concern you most.',

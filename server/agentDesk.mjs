@@ -6,6 +6,7 @@ export function createAgentDesk(deps) {
   const callProvider = deps.callProvider;
   const providerModel = deps.providerModel;
   const extractProviderContent = deps.extractProviderContent;
+  const externalBotCommand = deps.externalBotCommand;
 
   const agentStateFile = process.env.AGENT_STATE_FILE || "/opt/tradebotzi/data/agent-state.json";
   let events = [];
@@ -1449,6 +1450,26 @@ export function createAgentDesk(deps) {
     });
     pushEvent("command", "Command received: " + command, { jobId: jobId });
 
+    let externalBots = null;
+    if (typeof externalBotCommand === "function") {
+      try {
+        externalBots = await externalBotCommand(command);
+        if (externalBots) {
+          pushEvent("external_bot", "External bot adapter supplied verified runtime context", {
+            jobId: jobId,
+            bot: externalBots.requestedBot || null,
+            action: externalBots.actionExecuted || null
+          });
+        }
+      } catch (error) {
+        externalBots = {
+          error: String(error),
+          truthNote: "External bot action/context retrieval failed; do not invent bot state."
+        };
+        pushEvent("error", "External bot adapter failed: " + String(error), { jobId: jobId });
+      }
+    }
+
     let proChart = null;
     if (explicitProChartCommand(command)) {
       try {
@@ -1466,7 +1487,8 @@ export function createAgentDesk(deps) {
       latestRanking: context.latestRanking || null,
       providerStatuses: context.providerStatuses || [],
       markets: (context.markets || []).slice(0, 40),
-      proChart: proChart
+      proChart: proChart,
+      externalBots: externalBots
     }).slice(0, 70000);
 
     const agentResults = await Promise.all(assignments.map(async function (assignment) {
@@ -1486,6 +1508,7 @@ export function createAgentDesk(deps) {
             "The portfolio facts supplied below already format percentages with explicit percent signs. Use those strings exactly. Do not reconvert, reannualize, or reinterpret their units.\n" +
             "Recovery Factor is total return divided by absolute maximum drawdown; higher values indicate stronger recovery efficiency. Do not reverse that interpretation.\n" +
             "Do not describe holdout diagnostics as profits the bot 'delivered' or 'earned'. Say the portfolio 'showed' or 'would have shown' those historical diagnostic values.\n" +
+            "External bot truth: when externalBots is present, it comes from a concrete bot adapter. Treat its state, decisions, actions, trades, and outputs as authoritative for that external bot. Never invent a signal or claim an external bot action happened unless externalBots shows it.\n" +
             "AI analysis is advisory only. PAPER execution decisions are made by the deterministic risk engine after all agent responses.\n" +
             "Current application state:\n" + contextText
         },
@@ -1611,6 +1634,7 @@ export function createAgentDesk(deps) {
       finishedAt: Date.now(),
       results: agentResults,
       proChart: proChart,
+      externalBots: externalBots,
       paperExecution: paperExecution
     };
     setJob(jobId, completed);

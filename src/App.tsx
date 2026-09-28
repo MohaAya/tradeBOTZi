@@ -70,34 +70,15 @@ import Dashboard from './components/Dashboard';
 import AgentDesk from './components/AgentDesk';
 import ProChartDesk from './components/ProChartDesk';
 import TaskCenter from './components/TaskCenter';
+import GithubBotIntegrations from './components/GithubBotIntegrations';
 
 // ============================================================
 // AGENTS PANEL
 // ============================================================
-function AgentsPanel({ store }: { store: AppStore }) {
-  const { agents, updateAgent, createAgent } = store;
+function AgentsPanel({ store, onOpenAgentDesk }: { store: AppStore; onOpenAgentDesk: (prompt?: string) => void }) {
+  const { agents, createAgent } = store;
   const [showCreate, setShowCreate] = useState(false);
   const [newName, setNewName] = useState('');
-  const [githubBots, setGithubBots] = useState<any[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      try {
-        const response = await fetch('/api/bot-integrations', { cache: 'no-store' });
-        const data = await response.json();
-        if (!cancelled && response.ok && data.ok && Array.isArray(data.bots)) {
-          setGithubBots(data.bots);
-        }
-      } catch {}
-    };
-    refresh();
-    const timer = setInterval(refresh, 10000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
 
   const handleCreate = () => {
     if (!newName.trim()) return;
@@ -127,71 +108,14 @@ function AgentsPanel({ store }: { store: AppStore }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-white">Strategy Profiles</h2>
-          <p className="text-gray-400 text-sm mt-1">Local profiles plus source-linked GitHub bot integrations. Runtime status below is reported by the VPS, not inferred by the UI.</p>
+          <p className="text-gray-400 text-sm mt-1">External bots below are real runtimes. Local profiles are configuration only until they are linked to a runtime.</p>
         </div>
         <button onClick={() => setShowCreate(!showCreate)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
-          <Zap className="w-4 h-4" />Create Agent
+          <Zap className="w-4 h-4" />Create Local Profile
         </button>
       </div>
 
-      <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
-        <div className="flex items-center justify-between gap-3 mb-4">
-          <div>
-            <h3 className="text-white font-semibold">GitHub Bot Integrations</h3>
-            <p className="text-gray-500 text-xs mt-1">These are external bot repositories connected to this VPS. Status is live and PAPER-only unless explicitly stated otherwise.</p>
-          </div>
-          <span className="text-[10px] px-2 py-1 rounded bg-gray-900 border border-gray-700 text-gray-400">{githubBots.length} sources</span>
-        </div>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {githubBots.map(bot => {
-            const active = bot.runtimeStatus === 'RUNNING';
-            const ready = bot.runtimeStatus === 'READY';
-            const blocked = bot.runtimeStatus === 'RESOURCE_BLOCKED';
-            return (
-              <div key={bot.id} className="bg-gray-950/60 border border-gray-700 rounded-xl p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Bot className="w-4 h-4 text-cyan-400" />
-                      <h4 className="text-white font-medium">{bot.name}</h4>
-                    </div>
-                    <p className="text-gray-500 text-[11px] mt-1">{bot.repository}</p>
-                  </div>
-                  <span className={'text-[10px] px-2 py-1 rounded border ' + (
-                    active ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
-                    ready ? 'bg-cyan-500/10 border-cyan-500/20 text-cyan-300' :
-                    blocked ? 'bg-amber-500/10 border-amber-500/20 text-amber-300' :
-                    'bg-red-500/10 border-red-500/20 text-red-300'
-                  )}>
-                    {bot.runtimeStatus}
-                  </span>
-                </div>
-                <p className="text-gray-300 text-xs mt-3">{bot.description}</p>
-                <div className="grid grid-cols-2 gap-2 mt-3 text-[11px]">
-                  <div className="bg-gray-900 rounded p-2">
-                    <p className="text-gray-500">Source</p>
-                    <p className={bot.sourceConnected ? 'text-emerald-300' : 'text-red-300'}>{bot.sourceConnected ? 'CONNECTED' : 'MISSING'}</p>
-                  </div>
-                  <div className="bg-gray-900 rounded p-2">
-                    <p className="text-gray-500">Execution</p>
-                    <p className="text-amber-300">{bot.executionMode}</p>
-                  </div>
-                </div>
-                {bot.reason && <p className="text-gray-500 text-[11px] mt-3">{bot.reason}</p>}
-                <a href={bot.url} target="_blank" rel="noreferrer"
-                  className="inline-flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 text-xs mt-3">
-                  <ExternalLink className="w-3.5 h-3.5" /> Open source repository
-                </a>
-              </div>
-            );
-          })}
-          {githubBots.length === 0 && (
-            <div className="xl:col-span-2 bg-gray-950/50 border border-gray-800 rounded-lg p-4 text-xs text-gray-500">
-              Waiting for VPS integration status...
-            </div>
-          )}
-        </div>
-      </div>
+      <GithubBotIntegrations onAskAgent={(prompt) => onOpenAgentDesk(prompt)} />
 
       {showCreate && (
         <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 flex items-center gap-3">
@@ -204,44 +128,32 @@ function AgentsPanel({ store }: { store: AppStore }) {
       {agents.length === 0 && (
         <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-12 text-center">
           <Users className="w-8 h-8 text-gray-500 mx-auto mb-4" />
-          <p className="text-white font-medium">No agents created</p>
-          <p className="text-gray-400 text-sm mt-2">Create an agent to start monitoring markets</p>
+          <p className="text-white font-medium">No local profiles</p>
+          <p className="text-gray-400 text-sm mt-2">Local profiles are optional configuration records; external bots run independently above.</p>
         </div>
       )}
 
       <div className="space-y-4">
         {agents.map(agent => (
           <div key={agent.id} className="bg-gray-800/50 border border-gray-700 rounded-xl p-5">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <div className="flex items-center gap-4">
-                <div className={`w-3 h-3 rounded-full ${
-                  agent.status === 'running' ? 'bg-emerald-400 animate-pulse' :
-                  agent.status === 'paused' ? 'bg-amber-400' :
-                  agent.status === 'error' ? 'bg-red-400' : 'bg-gray-400'
-                }`} />
+                <div className="w-3 h-3 rounded-full bg-gray-500" />
                 <div>
-                  <h3 className="text-white font-semibold">{agent.name}</h3>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-white font-semibold">{agent.name}</h3>
+                    <span className="text-[10px] px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-gray-400">LOCAL CONFIG</span>
+                  </div>
                   <p className="text-gray-400 text-xs">{agent.strategy} • {agent.market} • {agent.riskProfile}</p>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                {agent.status !== 'running' && (
-                  <button onClick={() => updateAgent(agent.id, { status: 'running' })}
-                    className="p-2 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20"><Play className="w-4 h-4" /></button>
-                )}
-                {agent.status === 'running' && (
-                  <button onClick={() => updateAgent(agent.id, { status: 'paused' })}
-                    className="p-2 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20"><Pause className="w-4 h-4" /></button>
-                )}
-                <button onClick={() => updateAgent(agent.id, { status: 'stopped' })}
-                  className="p-2 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20"><Square className="w-4 h-4" /></button>
-              </div>
+              <span className="text-[10px] px-2 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300">NOT LINKED</span>
             </div>
-            <div className="grid grid-cols-4 gap-4 mt-4 pt-4 border-t border-gray-700/50">
-              <div><p className="text-gray-500 text-xs">Status</p><p className="text-white text-sm">{agent.status}</p></div>
-              <div><p className="text-gray-500 text-xs">Capital</p><p className="text-white text-sm">${agent.capitalAllocation.toLocaleString()}</p></div>
-              <div><p className="text-gray-500 text-xs">Trades</p><p className="text-white text-sm">{agent.totalTrades}</p></div>
-              <div><p className="text-gray-500 text-xs">P&L</p><p className={`text-sm ${agent.pnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>${agent.pnl.toFixed(2)}</p></div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4 pt-4 border-t border-gray-700/50">
+              <div><p className="text-gray-500 text-xs">Runtime</p><p className="text-white text-sm">None</p></div>
+              <div><p className="text-gray-500 text-xs">Capital target</p><p className="text-white text-sm">${agent.capitalAllocation.toLocaleString()}</p></div>
+              <div><p className="text-gray-500 text-xs">Strategy</p><p className="text-white text-sm">{agent.strategy}</p></div>
+              <div><p className="text-gray-500 text-xs">Market</p><p className="text-white text-sm">{agent.market}</p></div>
             </div>
           </div>
         ))}
@@ -1614,7 +1526,13 @@ export default function App() {
   const renderContent = (tab: string) => {
     switch (tab) {
       case 'dashboard': return <Dashboard store={store} />;
-      case 'agents': return <AgentsPanel store={store} />;
+      case 'agents': return <AgentsPanel store={store} onOpenAgentDesk={(prompt) => {
+        if (prompt) {
+          localStorage.setItem('tradebotzi:agent-desk-draft', prompt);
+          window.dispatchEvent(new CustomEvent('tradebotzi:agent-desk-draft', { detail: prompt }));
+        }
+        setActiveTab('agent-desk');
+      }} />;
       case 'agent-desk': return <AgentDesk store={store} onOpenProChart={() => setActiveTab('prochart')} />;
       case 'prochart': return <ProChartDesk store={store} />;
       case 'portfolio-builder': return <PortfolioBuilder store={store} />;
