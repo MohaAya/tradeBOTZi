@@ -7,6 +7,7 @@ export function createAgentDesk(deps) {
   const providerModel = deps.providerModel;
   const extractProviderContent = deps.extractProviderContent;
   const externalBotCommand = deps.externalBotCommand;
+  const beginnerPaperCommand = deps.beginnerPaperCommand;
 
   const agentStateFile = process.env.AGENT_STATE_FILE || "/opt/tradebotzi/data/agent-state.json";
   let events = [];
@@ -1450,6 +1451,25 @@ export function createAgentDesk(deps) {
     });
     pushEvent("command", "Command received: " + command, { jobId: jobId });
 
+    let beginnerDemo = null;
+    if (typeof beginnerPaperCommand === "function") {
+      try {
+        beginnerDemo = await beginnerPaperCommand(command);
+        if (beginnerDemo) {
+          pushEvent("beginner_demo", "Beginner PAPER engine handled the demo command", {
+            jobId: jobId,
+            action: beginnerDemo.action || null
+          });
+        }
+      } catch (error) {
+        beginnerDemo = {
+          error: String(error),
+          truthNote: "Beginner PAPER action failed; do not invent an executed trade."
+        };
+        pushEvent("error", "Beginner PAPER engine failed: " + String(error), { jobId: jobId });
+      }
+    }
+
     let externalBots = null;
     if (typeof externalBotCommand === "function") {
       try {
@@ -1488,7 +1508,8 @@ export function createAgentDesk(deps) {
       providerStatuses: context.providerStatuses || [],
       markets: (context.markets || []).slice(0, 40),
       proChart: proChart,
-      externalBots: externalBots
+      externalBots: externalBots,
+      beginnerDemo: beginnerDemo
     }).slice(0, 70000);
 
     const agentResults = await Promise.all(assignments.map(async function (assignment) {
@@ -1509,6 +1530,7 @@ export function createAgentDesk(deps) {
             "Recovery Factor is total return divided by absolute maximum drawdown; higher values indicate stronger recovery efficiency. Do not reverse that interpretation.\n" +
             "Do not describe holdout diagnostics as profits the bot 'delivered' or 'earned'. Say the portfolio 'showed' or 'would have shown' those historical diagnostic values.\n" +
             "External bot truth: when externalBots is present, it comes from a concrete bot adapter. Treat its state, decisions, actions, trades, and outputs as authoritative for that external bot. Never invent a signal or claim an external bot action happened unless externalBots shows it.\n" +
+            "Beginner demo truth: when beginnerDemo is present, it comes from the dedicated PAPER long/short engine. It may contain simulated direction, leverage, margin, stop-loss, take-profit and P&L. Describe those fields exactly and never present them as live-money trades.\n" +
             "AI analysis is advisory only. PAPER execution decisions are made by the deterministic risk engine after all agent responses.\n" +
             "Current application state:\n" + contextText
         },
@@ -1599,7 +1621,7 @@ export function createAgentDesk(deps) {
     }));
 
     let paperExecution = null;
-    if (explicitInvestmentCommand(command)) {
+    if (!beginnerDemo && explicitInvestmentCommand(command)) {
       const portfolio = choosePortfolio(command, context);
       if (!portfolio) {
         paperExecution = {
@@ -1635,6 +1657,7 @@ export function createAgentDesk(deps) {
       results: agentResults,
       proChart: proChart,
       externalBots: externalBots,
+      beginnerDemo: beginnerDemo,
       paperExecution: paperExecution
     };
     setJob(jobId, completed);

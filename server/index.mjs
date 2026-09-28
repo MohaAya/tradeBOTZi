@@ -3,6 +3,7 @@ import { URL } from "node:url";
 import fs from "node:fs";
 import { createAgentDesk } from "./agentDesk.mjs";
 import { createBotIntegrations } from "./botIntegrations.mjs";
+import { createBeginnerPaper } from "./beginnerPaper.mjs";
 
 const PORT = Number(process.env.PORT || 3001);
 const OMNI_URL = process.env.OMNIROUTE_BASE_URL || "http://host.docker.internal:20128/v1";
@@ -278,10 +279,12 @@ async function runChatJob(messages) {
 }
 
 const botIntegrations = createBotIntegrations();
+const beginnerPaper = createBeginnerPaper({ serverMarketSnapshot });
 
 const agentDesk = createAgentDesk({
   serverMarketSnapshot,
   externalBotCommand: (command) => botIntegrations.naturalCommand(command),
+  beginnerPaperCommand: (command) => beginnerPaper.naturalCommand(command),
   callProvider: async (provider, messages) => {
     if (provider === "omniroute") return omniChat(messages);
     if (provider === "freellm") return freeLlmChat(messages);
@@ -344,6 +347,59 @@ const server = http.createServer(async (req, res) => {
       } catch (error) {
         return sendJson(res, 400, { ok: false, paperOnly: true, error: String(error) });
       }
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/demo/state") {
+      return sendJson(res, 200, { ok: true, paperOnly: true, demo: beginnerPaper.state() });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/demo/proposals") {
+      const proposals = await beginnerPaper.proposals();
+      return sendJson(res, 200, { ok: true, paperOnly: true, proposals });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/demo/start") {
+      const body = await readBody(req);
+      const demo = beginnerPaper.startAutopilot({
+        capital: body.capital,
+        riskLevel: body.riskLevel,
+        resetAccount: body.resetAccount === true
+      });
+      return sendJson(res, 200, { ok: true, paperOnly: true, demo });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/demo/stop") {
+      return sendJson(res, 200, { ok: true, paperOnly: true, demo: beginnerPaper.stopAutopilot() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/demo/run") {
+      const result = await beginnerPaper.tick(true);
+      return sendJson(res, 200, { ok: true, paperOnly: true, result });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/demo/open") {
+      const body = await readBody(req);
+      const position = await beginnerPaper.openTrade(body);
+      return sendJson(res, 200, { ok: true, paperOnly: true, position, demo: beginnerPaper.state() });
+    }
+
+    if (req.method === "POST" && /^\/api\/demo\/positions\/[^/]+\/close$/.test(url.pathname)) {
+      const positionId = url.pathname.split("/")[4];
+      const body = await readBody(req);
+      const trade = await beginnerPaper.closeTrade(positionId, body.reason || "manual_close");
+      return sendJson(res, 200, { ok: true, paperOnly: true, trade, demo: beginnerPaper.state() });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/demo/reset") {
+      const body = await readBody(req);
+      const demo = beginnerPaper.reset(body.capital, body.riskLevel);
+      return sendJson(res, 200, { ok: true, paperOnly: true, demo });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/demo/live-permission") {
+      const body = await readBody(req);
+      const live = beginnerPaper.recordLivePermission(body.phrase);
+      return sendJson(res, 200, { ok: true, live });
     }
 
     if (req.method === "GET" && url.pathname === "/api/markets") {

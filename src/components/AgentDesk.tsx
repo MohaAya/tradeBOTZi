@@ -238,6 +238,30 @@ export default function AgentDesk({
         });
       }
 
+      if (result.beginnerDemo) {
+        const demo = result.beginnerDemo;
+        const position = demo.position;
+        const state = demo.state;
+        const summary = position
+          ? ('Opened PAPER ' + position.direction + ' ' + position.symbol + ' at ' + position.leverage + '× leverage. ' +
+             'Margin $' + Number(position.margin).toFixed(2) + ', exposure $' + Number(position.notional).toFixed(2) +
+             ', stop ' + Number(position.stopLossPrice).toLocaleString(undefined, { maximumFractionDigits: 4 }) +
+             ', take-profit ' + Number(position.takeProfitPrice).toLocaleString(undefined, { maximumFractionDigits: 4 }) + '.')
+          : demo.action === 'start_autopilot'
+            ? ('Demo Autopilot started. PAPER equity $' + Number(state?.account?.equity || 0).toFixed(2) +
+               ', risk ' + (state?.autopilot?.riskLevel || 'balanced') + '.')
+            : demo.action === 'stop_autopilot'
+              ? 'Demo Autopilot paused. Existing PAPER positions remain managed by the demo engine.'
+              : demo.action === 'scan_now'
+                ? 'Demo Autopilot scanned the market and updated its PAPER positions.'
+                : 'Beginner PAPER engine supplied the current demo state.';
+        agentMessages.unshift({
+          kind: 'system',
+          ok: !demo.error,
+          content: demo.error ? ('Beginner PAPER action failed: ' + demo.error) : summary,
+        });
+      }
+
       if (result.paperExecution) {
         const exec = result.paperExecution;
         if (exec.ok) {
@@ -286,6 +310,8 @@ export default function AgentDesk({
   };
 
   const quickCommands = [
+    'Invest for me in demo with $1,000 balanced risk. Start the beginner PAPER autopilot and explain any positions it opens.',
+    'Paper LONG BTC with 2x leverage and explain the margin, stop loss, take profit and liquidation estimate.',
     'Ask CABBAGE for its current BTC/EUR signal, decision trace, indicators, PAPER portfolio state and latest trades. Explain the actual bot output without inventing missing data.',
     'Analyze the current portfolios. Each agent should challenge the allocations from its own role.',
     'Open ProChart BTCUSDT, inspect indicators, and run a backtest. Report what actually happened.',
