@@ -64,6 +64,19 @@ function sideClass(side: string) {
   return side === 'LONG' ? 'text-emerald-300' : side === 'SHORT' ? 'text-red-300' : 'text-gray-400';
 }
 
+function SectionHelp({ title = 'What this means · How to use it', children }: { title?: string; children: React.ReactNode }) {
+  return (
+    <details className="mt-3 rounded-lg border border-gray-800 bg-gray-950/50">
+      <summary className="cursor-pointer select-none px-3 py-2 text-[11px] font-medium text-cyan-300 hover:text-cyan-200">
+        {title}
+      </summary>
+      <div className="border-t border-gray-800 px-3 py-3 text-[11px] leading-relaxed text-gray-400">
+        {children}
+      </div>
+    </details>
+  );
+}
+
 export default function InvestmentRoom() {
   const [room, setRoom] = useState<any>(null);
   const [aiProviders, setAiProviders] = useState<any[]>([]);
@@ -212,6 +225,12 @@ export default function InvestmentRoom() {
         </div>
       </div>
 
+      <SectionHelp title="Start here · what the Investment Room is doing">
+        <p><span className="text-gray-200 font-medium">REAL MARKET DATA</span> means prices/candles come from live market sources. <span className="text-gray-200 font-medium">PAPER</span> means the orders and money are simulated — no real broker/exchange order is being placed.</p>
+        <p className="mt-2"><span className="text-gray-200 font-medium">AUTONOMOUS PAPER RUNNING</span> means new strategy/council evaluations may create PAPER entries automatically. <span className="text-gray-200 font-medium">PAUSED</span> means no new automatic entries, while existing PAPER positions can still be marked and protected.</p>
+        <p className="mt-2">A useful workflow is: choose capital/leverage → start or run one round → inspect AI disagreement → compare strategy portfolios → inspect chart/fills → verify the ledger → repeat over time before drawing conclusions.</p>
+      </SectionHelp>
+
       {notice && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-300">{notice}</div>}
       {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</div>}
 
@@ -293,6 +312,17 @@ export default function InvestmentRoom() {
             Reset All Paper Portfolios
           </button>
         </div>
+
+        <SectionHelp title="How to use the controls">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <p><span className="text-gray-200 font-medium">Capital</span> sets the starting PAPER cash for every comparison portfolio. Use the same amount so strategy results are comparable.</p>
+            <p><span className="text-gray-200 font-medium">Maximum leverage</span> caps how much simulated exposure a strategy or council trade may use. Higher leverage magnifies both gains and losses.</p>
+            <p><span className="text-gray-200 font-medium">My Selected Strategy</span> is your own follow-along portfolio. Changing it starts a fresh track record for that one portfolio only.</p>
+            <p><span className="text-gray-200 font-medium">Start</span> enables recurring PAPER decisions. <span className="text-gray-200 font-medium">Pause</span> stops new entries but keeps existing positions marked and protected.</p>
+            <p><span className="text-gray-200 font-medium">Run Council + Strategies Now</span> forces one immediate evaluation using current market/evidence data even while continuous entries are paused.</p>
+            <p><span className="text-gray-200 font-medium">Reset</span> clears PAPER portfolios and starts their performance histories again from the capital you entered.</p>
+          </div>
+        </SectionHelp>
       </div>
 
       <div className="rounded-2xl border border-violet-500/30 bg-gradient-to-br from-violet-500/10 via-gray-900 to-gray-950 p-5">
@@ -315,6 +345,17 @@ export default function InvestmentRoom() {
             Ask Full Council Now
           </button>
         </div>
+
+        <SectionHelp title="How to read and use the AI agents">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <p><span className="text-gray-200 font-medium">CONNECTED</span> means the provider endpoint is reachable. It does not guarantee that every individual vote will finish before the council deadline.</p>
+            <p><span className="text-gray-200 font-medium">Latest vote</span> is that model's independent LONG, SHORT or HOLD opinion for one asset, based only on the evidence supplied in that council round.</p>
+            <p><span className="text-gray-200 font-medium">Confidence</span> is the model's self-reported confidence. Treat it as one input, not a probability of profit.</p>
+            <p><span className="text-gray-200 font-medium">UNAVAILABLE</span> means the model timed out, rate-limited, or returned an unusable response. Its vote is excluded rather than fabricated.</p>
+            <p><span className="text-gray-200 font-medium">How to use this</span> — compare disagreement. If several independent agents and machine strategies align, the council score grows; if they conflict, the system should often make no trade.</p>
+            <p><span className="text-gray-200 font-medium">Ask Full Council Now</span> runs a fresh PAPER-only round using current market data and evidence so you can inspect each agent's reasoning side by side.</p>
+          </div>
+        </SectionHelp>
 
         <div className="mt-5">
           <div className="flex items-center gap-2">
@@ -425,7 +466,20 @@ export default function InvestmentRoom() {
           <h3 className="text-white font-semibold">Strategy portfolios</h3>
           <span className="text-[10px] text-gray-500">Independent PAPER accounts · same starting capital</span>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+
+        <SectionHelp title="What each portfolio is · how to compare them">
+          <div className="space-y-2">
+            <p><span className="text-gray-200 font-medium">My Selected Strategy</span> follows whichever strategy you chose above. Use it as your personal benchmark without stopping the other comparison portfolios.</p>
+            <p><span className="text-gray-200 font-medium">Council Auto</span> trades only when the combined AI + machine vote clears the deterministic action threshold.</p>
+            <p><span className="text-gray-200 font-medium">ProChart portfolios</span> each follow one technical strategy independently — EMA Crossover, RSI Mean Reversion, MACD, Bollinger Reversion, or SuperTrend.</p>
+            <p><span className="text-gray-200 font-medium">CABBAGE</span> follows the real CABBAGE RSI + EMA machine decision. <span className="text-gray-200 font-medium">Stonkfly</span> follows its actual connectome readout when one exists. <span className="text-gray-200 font-medium">24h Momentum</span> reacts to the strongest daily move among BTC, ETH and SOL.</p>
+            <p><span className="text-gray-200 font-medium">Click any portfolio card</span> to make it the active portfolio for the chart and explanation panels below.</p>
+            <p><span className="text-gray-200 font-medium">Equity</span> = current marked account value. <span className="text-gray-200 font-medium">P&L</span> = gain/loss versus starting capital. <span className="text-gray-200 font-medium">Win rate</span> = profitable closed trades / all closed trades. <span className="text-gray-200 font-medium">Drawdown</span> = decline from that portfolio's highest equity point.</p>
+            <p><span className="text-gray-200 font-medium">How to use this</span> — compare returns together with drawdown and trade count. A portfolio with higher P&L but much deeper drawdown may be taking substantially more risk.</p>
+          </div>
+        </SectionHelp>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mt-3">
           {books.map((book: any) => {
             const selected = currentBook?.key === book.key;
             const pnl = Number(book.equity || 0) - Number(book.initialCapital || 0);
@@ -500,6 +554,13 @@ export default function InvestmentRoom() {
               ))}
             </div>
           </div>
+          <div className="px-4">
+            <SectionHelp title="How to use the chart">
+              <p><span className="text-gray-200 font-medium">Candles</span> are real Binance 1-hour OHLC data. <span className="text-gray-200 font-medium">Markers</span> show PAPER fills for the selected portfolio. Open positions also draw entry, stop-loss and take-profit levels.</p>
+              <p className="mt-2"><span className="text-gray-200 font-medium">BTC / ETH / SOL buttons</span> change the asset shown without changing the selected portfolio. Use the chart to check whether the strategy entered near a breakout, reversal, trend continuation, or weak signal.</p>
+              <p className="mt-2"><span className="text-gray-200 font-medium">Best use</span> — after a trade, compare the entry marker with the strategy reason and later price action. This helps you learn whether a strategy's logic matched what actually happened.</p>
+            </SectionHelp>
+          </div>
           <BrokerChart symbol={symbol} fills={fills} positions={positions} bookId={currentBook?.key || 'council_auto'} />
         </div>
 
@@ -530,6 +591,14 @@ export default function InvestmentRoom() {
               </p>
             </div>
           )}
+
+          <div className="px-3 pb-3">
+            <SectionHelp title="How to read the council decision">
+              <p><span className="text-gray-200 font-medium">Action score</span> is the signed sum of weighted LONG and SHORT support for the strongest asset. It is not a probability.</p>
+              <p className="mt-2"><span className="text-gray-200 font-medium">Execution threshold</span> is the minimum absolute score required before Council Auto can open a PAPER trade. Below it, the correct result is NO TRADE.</p>
+              <p className="mt-2"><span className="text-gray-200 font-medium">LONG / SHORT / HOLD weights</span> show how much evidence supported each stance. Use the transcript underneath to see exactly which agent or machine contributed each vote and why.</p>
+            </SectionHelp>
+          </div>
 
           <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
             {transcript.length === 0 && (
@@ -579,6 +648,11 @@ export default function InvestmentRoom() {
             </div>
             <span className="text-[10px] text-gray-500">{room?.lastStrategyRefreshAt ? new Date(room.lastStrategyRefreshAt).toLocaleTimeString() : 'not refreshed'}</span>
           </div>
+          <SectionHelp title="How to use the ProChart strategy lab">
+            <p><span className="text-gray-200 font-medium">Signal</span> is the strategy's latest LONG, SHORT or HOLD output. <span className="text-gray-200 font-medium">Net</span> is backtest return over the tested range. <span className="text-gray-200 font-medium">Win</span> is winning-trade percentage.</p>
+            <p className="mt-2"><span className="text-gray-200 font-medium">PF</span> means profit factor: gross profits divided by gross losses. Above 1 means historical profits exceeded losses; below 1 means the opposite. <span className="text-gray-200 font-medium">Max DD</span> is the deepest backtest drawdown.</p>
+            <p className="mt-2"><span className="text-gray-200 font-medium">How to use this</span> — do not pick a strategy from one metric. Prefer combinations of positive net return, acceptable drawdown, enough trades, and a profit factor above 1; then compare its live PAPER portfolio over time.</p>
+          </SectionHelp>
           <div className="overflow-x-auto mt-4">
             <table className="w-full text-xs">
               <thead>
@@ -621,6 +695,10 @@ export default function InvestmentRoom() {
             <Brain className="w-4 h-4 text-violet-400" />
             <h3 className="text-white font-semibold">Why this portfolio traded</h3>
           </div>
+          <SectionHelp title="How to use this explanation">
+            <p>This panel explains the most recent decision for the portfolio you clicked above. <span className="text-gray-200 font-medium">Strategy</span> tells you the decision rule; <span className="text-gray-200 font-medium">Source</span> tells you which engine or agent produced it.</p>
+            <p className="mt-2">Use this together with the chart and ledger: first read the thesis, then inspect the entry on the real candles, then watch whether stop/target and later P&amp;L support or contradict the original reasoning.</p>
+          </SectionHelp>
           {currentBook?.lastDecision ? (
             <div className="mt-4">
               <div className="flex items-center gap-2">
@@ -656,7 +734,20 @@ export default function InvestmentRoom() {
           <h3 className="text-white font-semibold">Evidence rooms</h3>
           <span className="text-[10px] text-gray-500">Context for the AI agents · not copied blindly into trades</span>
         </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+
+        <SectionHelp title="What each evidence room is · how to use it">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <p><span className="text-gray-200 font-medium">Polymarket</span> shows market-implied probabilities for relevant macro/crypto events. Treat them as crowd pricing, not facts.</p>
+            <p><span className="text-gray-200 font-medium">Crypto News</span> supplies current headlines that may explain volatility or new catalysts.</p>
+            <p><span className="text-gray-200 font-medium">Macro</span> surfaces inflation, rates, recession and central-bank context that can affect risk assets.</p>
+            <p><span className="text-gray-200 font-medium">Research</span> adds analytical/outlook material that agents can contrast with short-term signals.</p>
+            <p><span className="text-gray-200 font-medium">DefiLlama</span> contributes on-chain/protocol activity such as fee trends.</p>
+            <p><span className="text-gray-200 font-medium">CABBAGE / Stonkfly</span> expose machine-state evidence from the connected strategy engines.</p>
+          </div>
+          <p className="mt-2"><span className="text-gray-200 font-medium">How to use this</span> — open the evidence rooms when an AI gives a surprising vote. Check whether its thesis is actually supported by current evidence instead of trusting the model label.</p>
+        </SectionHelp>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3 mt-3">
           {evidenceRooms.map((evidence: any) => (
             <div key={evidence.source} className="bg-gray-800/50 border border-gray-700 rounded-xl p-4 min-h-[170px]">
               <div className="flex items-center justify-between gap-2">
@@ -709,6 +800,10 @@ export default function InvestmentRoom() {
               <p className="text-white font-semibold text-sm">Open positions</p>
             </div>
             <p className="text-gray-500 text-[10px] mt-1">Broker-style open positions across every strategy portfolio.</p>
+            <SectionHelp title="How to read open positions">
+              <p><span className="text-gray-200 font-medium">Side</span> is LONG or SHORT. <span className="text-gray-200 font-medium">Lev</span> is simulated leverage. <span className="text-gray-200 font-medium">Margin</span> is PAPER capital committed to the position. <span className="text-gray-200 font-medium">P&amp;L</span> is the current unrealized gain/loss.</p>
+              <p className="mt-2">Use this table to compare live exposure across strategies. A strategy can look good on equity while carrying a large open risk, so always inspect positions together with drawdown and leverage.</p>
+            </SectionHelp>
           </div>
           <div className="max-h-[420px] overflow-auto">
             <table className="w-full text-xs">
@@ -744,15 +839,21 @@ export default function InvestmentRoom() {
         </div>
 
         <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-700 flex items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <Clock3 className="w-4 h-4 text-cyan-400" />
-                <p className="text-white font-semibold text-sm">Paper broker ledger</p>
+          <div className="px-4 py-3 border-b border-gray-700">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Clock3 className="w-4 h-4 text-cyan-400" />
+                  <p className="text-white font-semibold text-sm">Paper broker ledger</p>
+                </div>
+                <p className="text-gray-500 text-[10px] mt-1">Every strategy/council order is stored with portfolio, side, leverage, size, status and reason.</p>
               </div>
-              <p className="text-gray-500 text-[10px] mt-1">Every strategy/council order is stored with portfolio, side, leverage, size, status and reason.</p>
+              <span className="text-[10px] text-gray-500">{recentOrders.length} retained</span>
             </div>
-            <span className="text-[10px] text-gray-500">{recentOrders.length} retained</span>
+            <SectionHelp title="How to read the broker ledger">
+              <p><span className="text-gray-200 font-medium">Order</span> shows OPEN/CLOSE plus LONG/SHORT. <span className="text-gray-200 font-medium">Notional</span> is total simulated market exposure after leverage. <span className="text-gray-200 font-medium">Status</span> confirms whether the PAPER order was filled.</p>
+              <p className="mt-2">Use the ledger as the audit trail. When an agent or strategy claims something happened, verify the actual PAPER order here and then find its fill marker on the chart.</p>
+            </SectionHelp>
           </div>
           <div className="max-h-[420px] overflow-auto">
             <table className="w-full text-xs">
