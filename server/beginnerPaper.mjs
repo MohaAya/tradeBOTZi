@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 
 const STATE_FILE = process.env.BEGINNER_PAPER_STATE_FILE || "/opt/tradebotzi/data/beginner-paper.json";
 const TICK_MS = 15000;
@@ -56,7 +57,7 @@ function loadState() {
 }
 
 export function createBeginnerPaper({ serverMarketSnapshot }) {
-  fs.mkdirSync("/opt/tradebotzi/data", { recursive: true });
+  fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
   let state = loadState();
   let busy = false;
 
