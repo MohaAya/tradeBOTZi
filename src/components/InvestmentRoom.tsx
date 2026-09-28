@@ -345,7 +345,7 @@ export default function InvestmentRoom() {
               <Sparkles className="w-4 h-4 text-violet-400" />
               <div>
                 <p className="text-white font-semibold text-sm">Live Council Room</p>
-                <p className="text-gray-500 text-[10px]">OmniRoute · Hermes · FreeLLM · Ollama · ProChart · CABBAGE · Stonkfly</p>
+                <p className="text-gray-500 text-[10px]">NVIDIA Nemotron · NVIDIA GPT-OSS · OmniRoute · Hermes · FreeLLM · Ollama · ProChart · CABBAGE · Stonkfly</p>
               </div>
             </div>
             <span className="text-[10px] text-gray-500">{room?.lastCouncilAt ? new Date(room.lastCouncilAt).toLocaleTimeString() : 'not run yet'}</span>
@@ -617,7 +617,7 @@ export default function InvestmentRoom() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
           {[
-            ['1', 'Watch the council', 'Read how OmniRoute, Hermes, FreeLLM, Ollama, CABBAGE, Stonkfly and ProChart agree or disagree.'],
+            ['1', 'Watch the council', 'Read how NVIDIA Nemotron, NVIDIA GPT-OSS, OmniRoute, Hermes, FreeLLM, Ollama, CABBAGE, Stonkfly and ProChart agree or disagree.'],
             ['2', 'Inspect the chart', 'Every PAPER fill is marked on real candles. Open positions also show entry, stop and target levels.'],
             ['3', 'Compare portfolios', 'Each strategy has the same starting capital, so equity, drawdown and win rate can be compared over time.'],
             ['4', 'Read the ledger', 'Every simulated order is recorded like a broker statement, including the strategy and reason that caused it.'],

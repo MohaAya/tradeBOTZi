@@ -59,7 +59,9 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
   let state=Object.assign(freshState(),safeJson(STATE_FILE,{})||{});
   let cycleBusy=false;
   const providers=[
-    {provider:"omniroute",role:"Portfolio Manager"},
+    {provider:"nvidia",role:"Portfolio Manager"},
+    {provider:"nvidia-critic",role:"Independent Reasoning Critic"},
+    {provider:"omniroute",role:"Independent Market Analyst"},
     {provider:"hermes",role:"Risk Critic"},
     {provider:"freellm",role:"Macro & Event Analyst"},
     {provider:"ollama",role:"Technical Explainer"},
@@ -378,16 +380,39 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       {role:"user",content:JSON.stringify(context)}
     ];
     const result=await callProvider(provider,prompt);
-    const content=provider==="ollama"?result?.data?.message?.content:result?.data?.choices?.[0]?.message?.content;
-    const parsed=parseJsonObject(content);
-    if(!result?.ok||!parsed) return {provider,role,ok:false,error:"invalid_or_failed_response",raw:String(content||"").slice(0,1000)};
+    let content=provider==="ollama"?result?.data?.message?.content:result?.data?.choices?.[0]?.message?.content;
+    let parsed=parseJsonObject(content);
+    let repaired=false;
+    if(result?.ok && content && !parsed){
+      const repairPrompt=[
+        {role:"system",content:"Convert the supplied trading vote into ONLY one valid JSON object with keys symbol, side, strategy, confidence, leverage, reason. Allowed symbols: BTC, ETH, SOL. Allowed sides: LONG, SHORT, HOLD. Do not add markdown."},
+        {role:"user",content:String(content).slice(0,4000)}
+      ];
+      const retry=await callProvider(provider,repairPrompt);
+      const retryContent=provider==="ollama"?retry?.data?.message?.content:retry?.data?.choices?.[0]?.message?.content;
+      const retryParsed=parseJsonObject(retryContent);
+      if(retry?.ok && retryParsed){
+        content=retryContent;
+        parsed=retryParsed;
+        repaired=true;
+      }
+    }
+    if(!result?.ok||!parsed){
+      const detail=!result?.ok
+        ? "provider_request_failed_status_"+String(result?.status||0)
+        : !content
+          ? "empty_provider_response"
+          : "invalid_json_response";
+      return {provider,role,ok:false,error:detail,providerStatus:result?.status||0,raw:String(content||"").slice(0,1000)};
+    }
     const symbol=SYMBOLS.includes(String(parsed.symbol||"").toUpperCase())?String(parsed.symbol).toUpperCase():"BTC";
     const side=["LONG","SHORT","HOLD"].includes(String(parsed.side||"").toUpperCase())?String(parsed.side).toUpperCase():"HOLD";
     return {
       provider,role,ok:true,symbol,side,strategy:String(parsed.strategy||role),
       confidence:clamp(finite(parsed.confidence,0.5),0,1),
       leverage:clamp(Math.round(finite(parsed.leverage,1)),1,state.leverage),
-      reason:String(parsed.reason||"").slice(0,500)
+      reason:String(parsed.reason||"").slice(0,500),
+      repaired
     };
   }
 

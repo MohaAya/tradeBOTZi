@@ -1379,7 +1379,7 @@ function ChatView({ store }: { store: AppStore }) {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-white">Research Copilot</h2>
-        <p className="text-gray-400 text-sm mt-1">Live AI with OmniRoute primary, FreeLLM, Ollama and Hermes fallback</p>
+        <p className="text-gray-400 text-sm mt-1">Live AI with NVIDIA Nemotron primary, then OmniRoute, NVIDIA GPT-OSS, FreeLLM, Ollama and Hermes fallback</p>
       </div>
 
       <div className="bg-gray-800/50 border border-gray-700 rounded-xl overflow-hidden flex flex-col" style={{ height: '600px' }}>

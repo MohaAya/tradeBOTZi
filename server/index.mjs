@@ -12,6 +12,11 @@ const HERMES_URL = process.env.HERMES_BASE_URL || "http://host.docker.internal:8
 const OLLAMA_URL = process.env.OLLAMA_BASE_URL || "http://host.docker.internal:11434";
 const FREELLM_URL = process.env.FREELLM_BASE_URL || "http://127.0.0.1:3002/v1";
 const FREELLM_DASHBOARD_URL = process.env.FREELLM_DASHBOARD_URL || "http://127.0.0.1:3001";
+const NVIDIA_URL = process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.com/v1";
+const NVIDIA_KEY_FILE = process.env.NVIDIA_KEY_FILE || "/run/secrets/nvidia_api_key";
+const NVIDIA_KEY = process.env.NVIDIA_API_KEY || (fs.existsSync(NVIDIA_KEY_FILE) ? fs.readFileSync(NVIDIA_KEY_FILE, "utf8").trim() : "");
+const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3.5-lightning-30b-a3b";
+const NVIDIA_CRITIC_MODEL = process.env.NVIDIA_CRITIC_MODEL || "openai/gpt-oss-20b";
 const zbotEnvPath = process.env.OMNIROUTE_CONFIG_FILE || "/run/secrets/zbot_env";
 const hermesKeyPath = process.env.HERMES_KEY_FILE || "/run/secrets/hermes_key";
 const zbotEnv = fs.existsSync(zbotEnvPath) ? fs.readFileSync(zbotEnvPath, "utf8") : "";
@@ -201,6 +206,10 @@ async function hermesModels() {
 async function ollamaModels() {
   return fetchJson(`${OLLAMA_URL}/api/tags`, {}, 10000);
 }
+async function nvidiaModels() {
+  if (!NVIDIA_KEY) return { ok: false, status: 0, data: { error: "NVIDIA API key not configured" } };
+  return fetchJson(`${NVIDIA_URL}/models`, { headers: bearerHeaders(NVIDIA_KEY) }, 10000);
+}
 
 async function freeLlmKey() {
   const result = await fetchJson(`${FREELLM_DASHBOARD_URL}/api/settings/api-key`, {}, 10000);
@@ -250,6 +259,22 @@ async function ollamaChat(messages) {
   }, 90000);
 }
 
+async function nvidiaChat(messages, model = NVIDIA_MODEL) {
+  if (!NVIDIA_KEY) return { ok: false, status: 0, data: { error: "NVIDIA API key not configured" } };
+  return fetchJson(`${NVIDIA_URL}/chat/completions`, {
+    method: "POST",
+    headers: bearerHeaders(NVIDIA_KEY),
+    body: JSON.stringify({
+      model,
+      messages,
+      stream: false,
+      temperature: 0.2,
+      top_p: 0.9,
+      max_tokens: 2048
+    })
+  }, 60000);
+}
+
 function extractContent(provider, result) {
   if (provider === "ollama") return result.data?.message?.content || "";
   return result.data?.choices?.[0]?.message?.content || "";
@@ -262,7 +287,12 @@ function createJobId() {
 async function runChatJob(messages) {
   const attempts = [];
   for (const [provider, fn] of [
-    ["omniroute", omniChat], ["freellm", freeLlmChat], ["ollama", ollamaChat], ["hermes", hermesChat]
+    ["nvidia", (msgs) => nvidiaChat(msgs, NVIDIA_MODEL)],
+    ["omniroute", omniChat],
+    ["nvidia-critic", (msgs) => nvidiaChat(msgs, NVIDIA_CRITIC_MODEL)],
+    ["freellm", freeLlmChat],
+    ["ollama", ollamaChat],
+    ["hermes", hermesChat]
   ]) {
     try {
       const started = Date.now();
@@ -270,8 +300,13 @@ async function runChatJob(messages) {
       const latencyMs = Date.now() - started;
       attempts.push({ provider, status: result.status, latencyMs });
       const content = extractContent(provider, result);
-      const model = provider === "omniroute" ? OMNI_MODEL : provider === "freellm" ? "auto" : provider === "hermes" ? "hermes-agent" : OLLAMA_MODEL;
-      if (result.ok && content) return { ok: true, provider, model, content, fallbackUsed: provider !== "omniroute", latencyMs, attempts };
+      const model = provider === "nvidia" ? NVIDIA_MODEL
+        : provider === "nvidia-critic" ? NVIDIA_CRITIC_MODEL
+        : provider === "omniroute" ? OMNI_MODEL
+        : provider === "freellm" ? "auto"
+        : provider === "hermes" ? "hermes-agent"
+        : OLLAMA_MODEL;
+      if (result.ok && content) return { ok: true, provider, model, content, fallbackUsed: provider !== "nvidia", latencyMs, attempts };
     } catch (error) {
       attempts.push({ provider, status: 0, error: String(error) });
     }
@@ -280,6 +315,8 @@ async function runChatJob(messages) {
 }
 
 async function callProvider(provider, messages) {
+  if (provider === "nvidia") return nvidiaChat(messages, NVIDIA_MODEL);
+  if (provider === "nvidia-critic") return nvidiaChat(messages, NVIDIA_CRITIC_MODEL);
   if (provider === "omniroute") return omniChat(messages);
   if (provider === "freellm") return freeLlmChat(messages);
   if (provider === "hermes") return hermesChat(messages);
@@ -300,7 +337,7 @@ const agentDesk = createAgentDesk({
   externalBotCommand: (command) => botIntegrations.naturalCommand(command),
   beginnerPaperCommand: (command) => beginnerPaper.naturalCommand(command),
   callProvider,
-  providerModel: (provider) => provider === "omniroute" ? OMNI_MODEL : provider === "freellm" ? "auto" : provider === "hermes" ? "hermes-agent" : provider === "ollama" ? OLLAMA_MODEL : "unknown",
+  providerModel: (provider) => provider === "nvidia" ? NVIDIA_MODEL : provider === "nvidia-critic" ? NVIDIA_CRITIC_MODEL : provider === "omniroute" ? OMNI_MODEL : provider === "freellm" ? "auto" : provider === "hermes" ? "hermes-agent" : provider === "ollama" ? OLLAMA_MODEL : "unknown",
   extractProviderContent: extractContent,
 });
 
@@ -474,11 +511,13 @@ const server = http.createServer(async (req, res) => {
         try { return { ...(await fn()), latencyMs: Date.now() - started }; }
         catch (error) { return { ok: false, status: 0, data: { error: String(error) }, latencyMs: Date.now() - started }; }
       };
-      const [omni, freeLlm, hermes, ollama] = await Promise.all([
-        timed(omniModels), timed(freeLlmModels), timed(hermesModels), timed(ollamaModels)
+      const [nvidia, omni, freeLlm, hermes, ollama] = await Promise.all([
+        timed(nvidiaModels), timed(omniModels), timed(freeLlmModels), timed(hermesModels), timed(ollamaModels)
       ]);
 
-      return sendJson(res, 200, { primary: "omniroute", providers: [
+      return sendJson(res, 200, { primary: "nvidia", providers: [
+        { id: "nvidia", label: "NVIDIA Nemotron", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
+        { id: "nvidia-critic", label: "NVIDIA GPT-OSS Critic", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_CRITIC_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
         { id: "omniroute", label: "OmniRoute", healthy: omni.ok, status: omni.ok ? "connected" : "error", model: OMNI_MODEL, modelCount: omni.data?.data?.length || 0, latencyMs: omni.latencyMs },
         { id: "freellm", label: "FreeLLM API", healthy: freeLlm.ok, status: freeLlm.ok ? "connected" : "error", model: "auto", modelCount: freeLlm.data?.data?.length || 0, latencyMs: freeLlm.latencyMs },
         { id: "hermes", label: "Hermes Agent", healthy: hermes.ok, status: hermes.ok ? "connected" : "error", model: "hermes-agent", modelCount: hermes.data?.data?.length || 0, latencyMs: hermes.latencyMs },

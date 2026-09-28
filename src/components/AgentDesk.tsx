@@ -43,6 +43,8 @@ const ROLE_OPTIONS = [
 ];
 
 const PROVIDER_LABELS: Record<string, string> = {
+  nvidia: 'NVIDIA Nemotron',
+  'nvidia-critic': 'NVIDIA GPT-OSS',
   omniroute: 'OmniRoute',
   freellm: 'FreeLLM',
   hermes: 'Hermes',
