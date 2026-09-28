@@ -846,7 +846,6 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     state.latestUniverse={mode:nextMode,markets:state.councilUniverse.markets,symbols:[],candidates:[],reason:"Universe settings changed; scan pending.",updatedAt:null};
     transcript("selection","User","Council universe changed to "+nextMode+" · markets "+state.councilUniverse.markets.join(", ")+(nextMode==="manual"?" · assets "+(nextSymbols.join(", ")||"none"):""),{councilUniverse:state.councilUniverse});
     save();
-    if(state.enabled) cycle(true).catch(()=>{});
     return publicState();
   }
 
