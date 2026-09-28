@@ -223,7 +223,9 @@ export default function InvestmentRoom() {
         mode: universeMode,
         markets: universeMarkets,
         symbols: universeSymbols,
-        maxCandidates,
+        maxCandidates: universeMode === 'manual'
+          ? Math.min(25, Math.max(3, universeSymbols.length))
+          : maxCandidates,
       });
       if (scanOnly) await post('/api/investment-room/universe/scan');
       setNotice(scanOnly

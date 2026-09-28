@@ -8,12 +8,13 @@ const COUNCIL_REFRESH_MS = 5 * 60 * 1000;
 const MARK_MS = 15000;
 const FEE_RATE = 0.001;
 const DEFAULT_CRYPTO = ["BTC","ETH","SOL","BNB","XRP","DOGE","ADA","AVAX","LINK","SUI","LTC","BCH","DOT","NEAR","APT","ATOM"];
+const DISCOVERY_CRYPTO = [...DEFAULT_CRYPTO,"HBAR","ALGO","ARB","UNI","ONDO","AAVE","FIL","TRX","XLM","XMR","ETC","ICP","WLD","ENA"];
 const EQUITY_SYMBOLS = ["NVDA","AAPL","MSFT","AMZN","META","TSLA","GOOGL","AMD","COIN","MSTR"];
 const ETF_SYMBOLS = ["SPY","QQQ","IWM","GLD","SLV","TLT","USO","XLE","XLK","XLF"];
-const STATIC_SYMBOLS = [...DEFAULT_CRYPTO,...EQUITY_SYMBOLS,...ETF_SYMBOLS];
+const STATIC_SYMBOLS = [...DISCOVERY_CRYPTO,...EQUITY_SYMBOLS,...ETF_SYMBOLS];
 const STABLE_CRYPTO = new Set(["USDC","USDP","FDUSD","TUSD","DAI","USDE","PYUSD","EUR","EURC"]);
 const ASSET_META = Object.fromEntries([
-  ...DEFAULT_CRYPTO.map(symbol=>[symbol,{symbol,label:symbol,market:"crypto",assetClass:"crypto"}]),
+  ...DISCOVERY_CRYPTO.map(symbol=>[symbol,{symbol,label:symbol,market:"crypto",assetClass:"crypto"}]),
   ...EQUITY_SYMBOLS.map(symbol=>[symbol,{symbol,label:symbol,market:"equity",assetClass:"equity"}]),
   ...ETF_SYMBOLS.map(symbol=>[symbol,{symbol,label:symbol,market:"etf",assetClass:"etf"}]),
 ]);
@@ -155,7 +156,9 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
   function cryptoOptions(snapshot,limit=30){
     const seen=new Set();
     return (snapshot?.observations||[])
-      .filter(row=>row.provider==="binance"&&row.assetClass==="crypto"&&row.canonicalSymbol&&!STABLE_CRYPTO.has(row.canonicalSymbol))
+      .filter(row=>row.provider==="binance"&&row.assetClass==="crypto"&&row.canonicalSymbol)
+      .filter(row=>DISCOVERY_CRYPTO.includes(row.canonicalSymbol)&&!STABLE_CRYPTO.has(row.canonicalSymbol))
+      .filter(row=>finite(row.volume24h)>=5_000_000)
       .filter(row=>{ if(seen.has(row.canonicalSymbol)) return false; seen.add(row.canonicalSymbol); return true; })
       .sort((a,b)=>finite(b.volume24h)-finite(a.volume24h))
       .slice(0,limit)
@@ -167,7 +170,11 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     if(!row) return null;
     const change=finite(row.change24h);
     const volume=Math.max(0,finite(row.volume24h));
-    const score=Math.abs(change)*1.5+Math.min(6,Math.log10(volume+1)*0.45);
+    const movement=Math.abs(change);
+    const movementScore=Math.min(movement,10)*0.8;
+    const liquidityScore=Math.min(5,Math.max(0,Math.log10(volume+1)-6)*1.2);
+    const extremePenalty=Math.max(0,movement-12)*0.7;
+    const score=movementScore+liquidityScore-extremePenalty;
     return {
       symbol,market:marketKind(symbol,row),price:finite(row.price),change24h:change,
       volume24h:volume,provider:row.provider,discoveryScore:Number(score.toFixed(3))
@@ -208,10 +215,24 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
         ...(selectedMarkets.includes("crypto")?crypto.map(x=>x.symbol):[]),
         ...staticForMarkets
       ];
-      symbols=pool.map(s=>candidateRow(s,markets)).filter(Boolean)
-        .sort((a,b)=>b.discoveryScore-a.discoveryScore)
-        .slice(0,maxCandidates).map(x=>x.symbol);
-      reason="Ranked supported assets by current absolute move and liquidity before council analysis.";
+      const ranked=pool.map(s=>candidateRow(s,markets)).filter(Boolean)
+        .sort((a,b)=>b.discoveryScore-a.discoveryScore);
+      const byMarket=Object.fromEntries(selectedMarkets.map(m=>[m,ranked.filter(row=>row.market===m)]));
+      const balanced=[];
+      if(selectedMarkets.length>1){
+        const baseQuota=Math.max(1,Math.floor(maxCandidates/selectedMarkets.length));
+        for(const market of selectedMarkets){
+          balanced.push(...(byMarket[market]||[]).slice(0,baseQuota));
+        }
+        for(const row of ranked){
+          if(balanced.length>=maxCandidates) break;
+          if(!balanced.some(x=>x.symbol===row.symbol)) balanced.push(row);
+        }
+      }else{
+        balanced.push(...ranked.slice(0,maxCandidates));
+      }
+      symbols=balanced.slice(0,maxCandidates).map(x=>x.symbol);
+      reason="Balanced the selected markets, then ranked liquid supported assets by current movement without rewarding extreme pump-like moves.";
     }
 
     const candidates=symbols.map(s=>candidateRow(s,markets)).filter(Boolean);
@@ -876,7 +897,7 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
       councilUniverse:state.councilUniverse,
       latestUniverse:state.latestUniverse,
       assetCatalog:{
-        crypto:DEFAULT_CRYPTO.map(symbol=>({symbol,label:symbol,market:"crypto"})),
+        crypto:DISCOVERY_CRYPTO.map(symbol=>({symbol,label:symbol,market:"crypto"})),
         equity:EQUITY_SYMBOLS.map(symbol=>({symbol,label:symbol,market:"equity"})),
         etf:ETF_SYMBOLS.map(symbol=>({symbol,label:symbol,market:"etf"}))
       },
