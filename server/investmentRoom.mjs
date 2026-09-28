@@ -60,7 +60,9 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
   let cycleBusy=false;
   const providers=[
     {provider:"nvidia",role:"Portfolio Manager"},
+    {provider:"nvidia-ultra",role:"Strategic Allocator"},
     {provider:"nvidia-critic",role:"Independent Reasoning Critic"},
+    {provider:"nvidia-gemma",role:"Technical Pattern Analyst"},
     {provider:"omniroute",role:"Independent Market Analyst"},
     {provider:"hermes",role:"Risk Critic"},
     {provider:"freellm",role:"Macro & Event Analyst"},

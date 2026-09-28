@@ -43,8 +43,10 @@ const ROLE_OPTIONS = [
 ];
 
 const PROVIDER_LABELS: Record<string, string> = {
-  nvidia: 'NVIDIA Nemotron',
-  'nvidia-critic': 'NVIDIA GPT-OSS',
+  nvidia: 'NVIDIA Nemotron 3.5',
+  'nvidia-ultra': 'NVIDIA Nemotron 3 Ultra',
+  'nvidia-critic': 'NVIDIA GPT-OSS 20B',
+  'nvidia-gemma': 'NVIDIA Gemma 4 31B',
   omniroute: 'OmniRoute',
   freellm: 'FreeLLM',
   hermes: 'Hermes',

@@ -16,7 +16,9 @@ const NVIDIA_URL = process.env.NVIDIA_BASE_URL || "https://integrate.api.nvidia.
 const NVIDIA_KEY_FILE = process.env.NVIDIA_KEY_FILE || "/run/secrets/nvidia_api_key";
 const NVIDIA_KEY = process.env.NVIDIA_API_KEY || (fs.existsSync(NVIDIA_KEY_FILE) ? fs.readFileSync(NVIDIA_KEY_FILE, "utf8").trim() : "");
 const NVIDIA_MODEL = process.env.NVIDIA_MODEL || "nvidia/nemotron-3.5-lightning-30b-a3b";
+const NVIDIA_ULTRA_MODEL = process.env.NVIDIA_ULTRA_MODEL || "nvidia/nemotron-3-ultra-550b-a55b";
 const NVIDIA_CRITIC_MODEL = process.env.NVIDIA_CRITIC_MODEL || "openai/gpt-oss-20b";
+const NVIDIA_GEMMA_MODEL = process.env.NVIDIA_GEMMA_MODEL || "google/gemma-4-31b-it";
 const zbotEnvPath = process.env.OMNIROUTE_CONFIG_FILE || "/run/secrets/zbot_env";
 const hermesKeyPath = process.env.HERMES_KEY_FILE || "/run/secrets/hermes_key";
 const zbotEnv = fs.existsSync(zbotEnvPath) ? fs.readFileSync(zbotEnvPath, "utf8") : "";
@@ -316,7 +318,9 @@ async function runChatJob(messages) {
 
 async function callProvider(provider, messages) {
   if (provider === "nvidia") return nvidiaChat(messages, NVIDIA_MODEL);
+  if (provider === "nvidia-ultra") return nvidiaChat(messages, NVIDIA_ULTRA_MODEL);
   if (provider === "nvidia-critic") return nvidiaChat(messages, NVIDIA_CRITIC_MODEL);
+  if (provider === "nvidia-gemma") return nvidiaChat(messages, NVIDIA_GEMMA_MODEL);
   if (provider === "omniroute") return omniChat(messages);
   if (provider === "freellm") return freeLlmChat(messages);
   if (provider === "hermes") return hermesChat(messages);
@@ -337,7 +341,7 @@ const agentDesk = createAgentDesk({
   externalBotCommand: (command) => botIntegrations.naturalCommand(command),
   beginnerPaperCommand: (command) => beginnerPaper.naturalCommand(command),
   callProvider,
-  providerModel: (provider) => provider === "nvidia" ? NVIDIA_MODEL : provider === "nvidia-critic" ? NVIDIA_CRITIC_MODEL : provider === "omniroute" ? OMNI_MODEL : provider === "freellm" ? "auto" : provider === "hermes" ? "hermes-agent" : provider === "ollama" ? OLLAMA_MODEL : "unknown",
+  providerModel: (provider) => provider === "nvidia" ? NVIDIA_MODEL : provider === "nvidia-ultra" ? NVIDIA_ULTRA_MODEL : provider === "nvidia-critic" ? NVIDIA_CRITIC_MODEL : provider === "nvidia-gemma" ? NVIDIA_GEMMA_MODEL : provider === "omniroute" ? OMNI_MODEL : provider === "freellm" ? "auto" : provider === "hermes" ? "hermes-agent" : provider === "ollama" ? OLLAMA_MODEL : "unknown",
   extractProviderContent: extractContent,
 });
 
@@ -516,8 +520,10 @@ const server = http.createServer(async (req, res) => {
       ]);
 
       return sendJson(res, 200, { primary: "nvidia", providers: [
-        { id: "nvidia", label: "NVIDIA Nemotron", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
-        { id: "nvidia-critic", label: "NVIDIA GPT-OSS Critic", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_CRITIC_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
+        { id: "nvidia", label: "NVIDIA Nemotron 3.5", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
+        { id: "nvidia-ultra", label: "NVIDIA Nemotron 3 Ultra", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_ULTRA_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
+        { id: "nvidia-critic", label: "NVIDIA GPT-OSS 20B", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_CRITIC_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
+        { id: "nvidia-gemma", label: "NVIDIA Gemma 4 31B", healthy: nvidia.ok, status: nvidia.ok ? "connected" : "error", model: NVIDIA_GEMMA_MODEL, modelCount: nvidia.data?.data?.length || 0, latencyMs: nvidia.latencyMs },
         { id: "omniroute", label: "OmniRoute", healthy: omni.ok, status: omni.ok ? "connected" : "error", model: OMNI_MODEL, modelCount: omni.data?.data?.length || 0, latencyMs: omni.latencyMs },
         { id: "freellm", label: "FreeLLM API", healthy: freeLlm.ok, status: freeLlm.ok ? "connected" : "error", model: "auto", modelCount: freeLlm.data?.data?.length || 0, latencyMs: freeLlm.latencyMs },
         { id: "hermes", label: "Hermes Agent", healthy: hermes.ok, status: hermes.ok ? "connected" : "error", model: "hermes-agent", modelCount: hermes.data?.data?.length || 0, latencyMs: hermes.latencyMs },
