@@ -528,12 +528,17 @@ export function createInvestmentRoom({serverMarketSnapshot, botIntegrations, cal
     transcript("round","Council","New investment round started with real market data and PAPER-only execution.",{});
     const aiVotes=await Promise.all(providers.map(async p=>{
       try{
-        const vote=await askAgent(p.provider,p.role,context);
+        const deadlineMs=p.provider==="nvidia-ultra"?35000:p.provider.startsWith("nvidia")?28000:22000;
+        const deadlineVote=new Promise(resolve=>setTimeout(()=>resolve({
+          provider:p.provider,role:p.role,ok:false,error:"agent_deadline_exceeded",
+          symbol:"BTC",side:"HOLD",confidence:0
+        }),deadlineMs));
+        const vote=await Promise.race([askAgent(p.provider,p.role,context),deadlineVote]);
         transcript("agent",p.role,(vote.ok?vote.side+" "+vote.symbol+" · "+vote.reason:"Unavailable: "+vote.error),{provider:p.provider,vote});
         return vote;
       }catch(error){
         const vote={provider:p.provider,role:p.role,ok:false,error:String(error),symbol:"BTC",side:"HOLD",confidence:0};
-        transcript("agent",p.role,"Unavailable: "+String(error),{provider:p.provider});
+        transcript("agent",p.role,"Unavailable: "+String(error),{provider:p.provider,vote});
         return vote;
       }
     }));
