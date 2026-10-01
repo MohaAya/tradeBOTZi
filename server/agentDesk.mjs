@@ -51,13 +51,14 @@ export function createAgentDesk(deps) {
     return value;
   }
 
-  let paperState = { accounts: {}, transactions: [], orders: [], snapshots: [], supervisor: null, supervisorRuns: [] };
+  let paperState = { accounts: {}, transactions: [], orders: [], fills: [], snapshots: [], supervisor: null, supervisorRuns: [] };
   try {
     const loaded = JSON.parse(fs.readFileSync(paperFile, "utf8"));
     paperState = {
       accounts: loaded.accounts || {},
       transactions: Array.isArray(loaded.transactions) ? loaded.transactions : [],
       orders: Array.isArray(loaded.orders) ? loaded.orders : [],
+      fills: Array.isArray(loaded.fills) ? loaded.fills : [],
       snapshots: Array.isArray(loaded.snapshots) ? loaded.snapshots : [],
       supervisor: loaded.supervisor || null,
       supervisorRuns: Array.isArray(loaded.supervisorRuns) ? loaded.supervisorRuns : []
@@ -715,6 +716,22 @@ export function createAgentDesk(deps) {
         assumptions: assumptions
       };
       transactions.push(transaction);
+      const fill = {
+        id: "pfill-" + Date.now() + "-" + index + "-" + Math.random().toString(36).slice(2, 7),
+        orderId: order.id,
+        portfolioId: portfolio.id,
+        timestamp: order.filledAt,
+        canonicalSymbol: asset.canonicalSymbol,
+        provider: market.provider,
+        side: "buy",
+        quantity: quantity,
+        price: fillPrice,
+        notional: notional,
+        fees: fees,
+        simulated: true,
+        supervisor: false
+      };
+      paperState.fills = paperState.fills.concat([fill]).slice(-3000);
       pushEvent("paper_fill", "PAPER BUY " + asset.canonicalSymbol + ": " + quantity.toFixed(6) + " @ " + fillPrice.toFixed(4), {
         portfolioId: portfolio.id,
         symbol: asset.canonicalSymbol,
@@ -930,6 +947,23 @@ export function createAgentDesk(deps) {
     };
     paperState.transactions = paperState.transactions.concat([transaction]).slice(-3000);
     account.transactions = (account.transactions || []).concat([transaction]).slice(-1000);
+    const fill = {
+      id: "supfill-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      orderId: order.id,
+      portfolioId: account.portfolioId,
+      timestamp: now,
+      canonicalSymbol: position.canonicalSymbol,
+      provider: market.provider || position.provider,
+      side: "sell",
+      quantity: qty,
+      price: fillPrice,
+      notional: gross,
+      fees: fees,
+      simulated: true,
+      supervisor: true,
+      reason: reason
+    };
+    paperState.fills = paperState.fills.concat([fill]).slice(-3000);
     account.cash = (Number(account.cash) || 0) + proceeds;
     account.realizedPnl = (Number(account.realizedPnl) || 0) + realized;
     account.totalFees = (Number(account.totalFees) || 0) + fees;
@@ -1065,6 +1099,23 @@ export function createAgentDesk(deps) {
     };
     paperState.transactions = paperState.transactions.concat([transaction]).slice(-3000);
     account.transactions = (account.transactions || []).concat([transaction]).slice(-1000);
+    const fill = {
+      id: "supfill-" + now + "-" + Math.random().toString(36).slice(2, 8),
+      orderId: order.id,
+      portfolioId: account.portfolioId,
+      timestamp: now,
+      canonicalSymbol: symbol,
+      provider: market.provider,
+      side: "buy",
+      quantity: quantity,
+      price: fillPrice,
+      notional: notional,
+      fees: fees,
+      simulated: true,
+      supervisor: true,
+      reason: reason
+    };
+    paperState.fills = paperState.fills.concat([fill]).slice(-3000);
 
     pushEvent("paper_order", "Supervisor PAPER BUY submitted for " + symbol + " (" + reason + ")", {
       portfolioId: account.portfolioId,
@@ -1810,8 +1861,21 @@ export function createAgentDesk(deps) {
         accounts: Object.values(paperState.accounts),
         transactions: paperState.transactions.slice(-200),
         orders: paperState.orders.slice(-200),
+        fills: paperState.fills.slice(-200),
         snapshots: paperState.snapshots.slice(-200),
         supervisor: publicSupervisorState()
+      });
+      return true;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/paper/fills") {
+      const portfolioId = String(url.searchParams.get("portfolioId") || "");
+      const fills = portfolioId
+        ? paperState.fills.filter(function (fill) { return fill.portfolioId === portfolioId; })
+        : paperState.fills;
+      sendJson(res, 200, {
+        paperOnly: true,
+        fills: fills.slice(-500)
       });
       return true;
     }
