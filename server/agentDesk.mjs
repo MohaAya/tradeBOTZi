@@ -1850,8 +1850,17 @@ export function createAgentDesk(deps) {
     return false;
   }
 
-  return {
+  const api = {
     handle: handle,
     defaultAssignments: defaultAssignments
   };
+  if (process.env.TRADEBOTZI_TEST_HOOKS === "1") {
+    api.testHooks = {
+      runSupervisorCycle: runSupervisorCycle,
+      getPaperState: function () { return paperState; },
+      savePaperState: savePaperState,
+      publicSupervisorState: publicSupervisorState
+    };
+  }
+  return api;
 }
