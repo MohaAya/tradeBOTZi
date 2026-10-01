@@ -500,7 +500,7 @@ function PortfolioBuilder({ store }: { store: AppStore }) {
           <div className="bg-cyan-500/5 border border-cyan-500/20 rounded-xl p-4">
             <p className="text-cyan-300 text-sm font-medium">Historical holdout diagnostics</p>
             <p className="text-gray-400 text-xs mt-1">
-              Assets and weights are built from an earlier construction window. The metrics below are calculated on a later holdout window ({selectedPortfolio.metrics.evaluationWindow}). They are not forecasts and do not simulate the future stop/rebalance supervisor.
+              Assets and weights are built from an earlier construction window. The metrics below are calculated on a later holdout window ({selectedPortfolio.metrics.evaluationWindow}). They are not forecasts and do not include the separate live PAPER supervisor's future execution path.
             </p>
           </div>
 
