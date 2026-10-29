@@ -39,3 +39,6 @@ postgres_/
 tmp/
 temp/
 .next/
+
+# Wrangler local state
+.wrangler/

@@ -1,3 +1,19 @@
+# Hosting (Cloudflare only, no server)
+
+The API now runs entirely on Cloudflare's free tier. The VPS this project used to depend on
+(OmniRoute, Hermes, FreeLLM, Ollama, systemd bots) no longer exists.
+
+- `cloudflare/worker.ts` serves the UI and routes `/api/*` to one Durable Object.
+- `cloudflare/engine-do.ts` hosts the engine and mirrors its state files into Durable Object storage.
+- `cloudflare/engine.mjs` is the old `server/index.mjs` as a fetch handler; it reuses `server/*.mjs` unchanged.
+- `cloudflare/shims/` replace `node:fs` (in-memory, persisted by the Durable Object) and `node:child_process`.
+- AI: eight council roles map to Workers AI models (Nemotron 3 Super, GPT-OSS 120B/20B, Gemma 4, Llama 3.3 70B, GLM 4.7 Flash, Mistral Small 3.1, Qwen3 30B). Set a `NVIDIA_API_KEY` secret to prefer NVIDIA's hosted API.
+- A cron trigger wakes the engine every minute so the PAPER loops keep running.
+- Not available on Cloudflare: the CABBAGE and Stonkfly external bots and the Agent Desk's browser automation (both need a real machine). They report as not installed.
+- Binance blocks Cloudflare IPs (HTTP 403), so market data comes from Coinbase and Hyperliquid, history falls back to Yahoo.
+
+Deploy: `npm install && npm run deploy:cloudflare`
+
 # Zbot — Real Market Data Portfolio Research System
 
 A production-grade portfolio research application that fetches **real market data** from multiple exchanges, generates diversified portfolios, calculates quantitative metrics, ranks them deterministically, and provides AI-powered analysis — all without any fake or hard-coded production values.
